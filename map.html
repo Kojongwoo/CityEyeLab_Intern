@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>pixel to gps mapping in kakaomap</title>
+  <script src="//dapi.kakao.com/v2/maps/sdk.js?appkey=7e422ab34489fb5e80e7def0fd930351"></script>
+  <style>#map {width:100%; height:900px;}</style>
+</head>
+<body>
+  <div id="timestamp" style="position:absolute; top:10px; left:10px; z-index:10; background:white; padding:5px; font-weight:bold; border-radius:5px;">
+    Time: 0s
+  </div>
+  <div id="map"></div>
+
+  <script>
+    const FPS = 30;  // 데이터가 30fps 기준이라면
+    let startTimeSec = 0;  // 시작 시간을 초 단위로 저장
+    let elapsedTime = 0;   // 경과 시간
+    let timeInterval;      // 타이머 핸들
+
+    const map = new kakao.maps.Map(document.getElementById('map'), {
+      mapTypeId: kakao.maps.MapTypeId.HYBRID,
+      center: new kakao.maps.LatLng(37.401303, 127.112970),
+      level: 1
+    });
+
+    let data = [];
+    let currentFrame = 1;
+    let maxFrame = 1;
+    const markers = new Map();
+
+    function updateMap() {
+      if (data.length === 0) return;
+
+      const frameData = data.filter(d => d.frame === currentFrame);
+
+      // 현재 프레임 마커 표시 및 위치 업데이트
+      frameData.forEach(obj => {
+        // 마커를 그릴 위치
+        const position = new kakao.maps.LatLng(obj.gps.lat, obj.gps.lng);
+
+        // label에 따라 이미지 경로 선택
+        let imageSrc = '';
+        let imageSize;
+
+        if (obj.label === 'car') {
+          imageSrc = './car_img/car.png';
+          imageSize = new kakao.maps.Size(35, 30);          
+        } 
+        else if (obj.label === 'bus_s') {
+          imageSrc = './car_img/bus_s.png';
+          imageSize = new kakao.maps.Size(40, 50);
+        } 
+        else if (obj.label === 'bus_m') {
+          imageSrc = './car_img/bus_m.png';
+          imageSize = new kakao.maps.Size(55, 55);
+        }
+        else if (obj.label === 'truck_s') {
+          imageSrc = './car_img/truck_s.png';
+          imageSize = new kakao.maps.Size(30, 35);
+        }
+        else if (obj.label === 'truck_m') {
+          imageSrc = './car_img/truck_m.png';
+          imageSize = new kakao.maps.Size(43, 45);
+        }
+        else if (obj.label === 'bike') {
+          imageSrc = './car_img/motorcycle.png';
+          imageSize = new kakao.maps.Size(43, 45);
+        }
+        else {
+          imageSrc = './car_img/car.png';
+          imageSize = new kakao.maps.Size(28, 25);
+        }
+
+
+        // 마커 이미지 변경
+        const markerImage = new kakao.maps.MarkerImage(
+          imageSrc, imageSize
+        );
+
+        if (markers.has(obj.id)) {
+          markers.get(obj.id).setPosition(position);
+        } 
+        else {
+          const marker = new kakao.maps.Marker({
+            position,
+            image: markerImage
+          });
+          marker.setMap(map);
+          markers.set(obj.id, marker);
+        }
+      });
+
+      // 이전 프레임에만 있던 마커 삭제
+      markers.forEach((marker, id) => {
+        if (!frameData.find(d => d.id === id)) {
+          marker.setMap(null);
+          markers.delete(id);
+        }
+      });
+      // 시간 업데이트
+      document.getElementById('timestamp').innerText = `Time: ${Math.floor(elapsedTime / FPS)}s`;
+      elapsedTime++;
+
+      currentFrame++;
+      if (currentFrame > maxFrame) currentFrame = 1;
+    }
+
+    function startAnimation() {
+      maxFrame = Math.max(...data.map(d => d.frame));
+      setInterval(updateMap, 1000 / 30);
+    }
+
+    // JSON 데이터 fetch
+    fetch('output.json')
+      .then(response => response.json())
+      .then(jsonData => {
+        data = jsonData;
+        startAnimation();
+      })
+      .catch(err => console.error("JSON 로드 실패:", err));
+  </script>
+</body>
+</html>
