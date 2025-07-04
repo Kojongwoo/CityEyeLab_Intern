@@ -1,3 +1,12 @@
+# 📁 pyQT.py
+# PyQt5 기반 GUI 영상 분석 도구
+# - 선 통과 카운트 기능 (교차선 감지)
+# - 정지 감지 기반 불법주정차 판별 기능 (ROI 체류 시간)
+# - CSV 로그 저장 및 영상 상 시각화
+
+# 작성자: (허종우)
+# 최종 수정일: 2025-07-04
+
 import sys, cv2, os
 import numpy as np
 from PyQt5.QtWidgets import (
@@ -61,6 +70,7 @@ def pixel_to_gps(x, y):
     lon = gps1[1] + ratio * (gps2[1] - gps1[1])
     return (lat, lon)
 
+# 두 선분이 교차하는지 판단하는 함수 (ccw 알고리즘 사용)
 def crossed_line(p1, p2, prev_pt, curr_pt):
     # QPoint → 튜플로 변환
     A = (prev_pt.x(), prev_pt.y())
@@ -145,10 +155,9 @@ class VideoWindow(QWidget):
         self.line_inputs = []  # [(QLineEdit, QTextEdit)]      
         self.redo_stack = []  # 되돌리기에 사용될 스택
 
-        self.crossed_lines = set()  # (obj_id, line_id) 튜플 저장
-
-        self.illegal_log = set()
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+
+        # 불법주정차 결과 저장용 csv 초기화
         self.output_csv = f"./logs/illegal_parking_{timestamp}.csv"
 
         if os.path.exists(self.output_csv):
@@ -185,29 +194,26 @@ class VideoWindow(QWidget):
         # Undo, Redo 버튼 추가
         self.undo_button = QPushButton("Undo")
         self.redo_button = QPushButton("Redo")
- 
-
         self.undo_button.clicked.connect(self.handle_undo)
         self.redo_button.clicked.connect(self.handle_redo)
-
         self.right_layout.addWidget(self.undo_button)
         self.right_layout.addWidget(self.redo_button)
 
-        # 스페이스바로 일시정지 상태 추적
+        # 일시정지 상태 추적
         self.is_paused = False  
 
-        self.prev_positions = {}  # 차량의 이전 위치 저장
-        self.line_counts = {}     # 선별 카운트 저장
-
-        # 차량 체류시간 측정을 위한 변수
-        self.stop_watch = {}
+        # 차량 정차 시간, 선 통과 이력 등 추적용 변수 초기화
+        self.prev_positions = {}    # 각 객체의 이전 프레임 위치
+        self.line_counts = {}       # 선별 카운트 저장 (몇 대가 통과했는지)
+        self.crossed_lines = set()  # 중복 통과 방지용 (obj_id, line_id)
+        self.illegal_log = set()    # 이미 불법정차로 기록된 차량 ID
+        self.stop_watch = {}        # 객체별 ROI 체류 시간 추적
 
 
         # 선 모드 / 영역 모드 전환
         self.draw_mode = 'line'  # 또는 'area'
         self.temp_points = []    # 클릭한 점들을 여기에 저장
 
-        
         self.stop_polygons = []  # 다중 사각형 ROI 저장용
 
         self.line_mode_button = QPushButton("선 모드")
@@ -242,44 +248,45 @@ class VideoWindow(QWidget):
         self.update_display_with_lines()
 
     def update_frame(self):
+        # 일시정지 상태 또는 선/영역 그리기 중일 경우 프레임 처리 중단
         if self.is_paused or self.drawing_enabled:
-            return  # 일시정지 상태면 프레임 업데이트 중단
-        
+            return  
+        # 다음 프레임 읽기
         ret, frame = self.cap.read()
         if not ret:
             self.timer.stop()
             self.cap.release()
             return
 
-        # ✅ 객체 박스 표시
+        # BGR → RGB 변환
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         if self.frame_idx in self.frame_data:
+            # 현재 프레임의 객체 정보 처리
             for obj_id, x1, y1, x2, y2, label in self.frame_data[self.frame_idx]:
                 color = LABEL_COLORS.get(label, DEFAULT_COLOR)
                 label_name = LABEL_NAMES.get(label, f"Label:{label}")
 
-                # 바운딩 박스
+                # 바운딩 박스 및 테스트
                 cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), color, 2)
-
                 # 객체 ID + 라벨명
                 cv2.putText(frame_rgb, f"ID:{obj_id}, {label_name}", (x1, y1 - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-                # 중심 좌표 및 원
+                # 중심 좌표 계산 및 시각화
                 cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
                 cv2.circle(frame_rgb, (cx, cy), 3, color, -1)
 
-                # GPS 텍스트
+                # GPS 좌표 표시
                 lat, lon = pixel_to_gps(cx, cy)
                 cv2.putText(frame_rgb, f"({lat:.6f}, {lon:.6f})", (cx + 5, cy + 15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
-                cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                # cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
                 curr_point = QPoint(cx, cy)
 
 
-                # ✅ 선 통과 감지 추가
+                # 선 통과 감지: 이전 위치와 현재 위치가 선을 가로질렀는지 확인 / 통과한 선은 crossed_lines에 추가
                 if obj_id in self.prev_positions:
                     prev_point = self.prev_positions[obj_id]
                     for p1, p2, num, _ in self.lines:
@@ -289,25 +296,31 @@ class VideoWindow(QWidget):
                                 self.line_counts[num] = self.line_counts.get(num, 0) + 1
                                 print(f"🚗 차량 {obj_id} 선 {num} 통과 (총 {self.line_counts[num]}회)")
 
+                # 현재 위치 저장
                 self.prev_positions[obj_id] = curr_point
 
+
             if hasattr(self, 'stop_polygons'):
+                # 정지 감지 및 불법주정차 판단: 현재 위치가 사각형 영역 내에 있는지 확인
                 for polygon in self.stop_polygons:
                     if len(polygon) == 4 and point_in_polygon((cx, cy), polygon):
+                        # 현재 객체가 정지 감지 영역에 있는 경우
                         self.stop_watch.setdefault(obj_id, {'start': self.frame_idx, 'end': self.frame_idx, 'prev_pos': curr_point})
                         self.stop_watch[obj_id]['end'] = self.frame_idx
                         self.stop_watch[obj_id]['prev_pos'] = curr_point
                         break
                 else:
                     if obj_id in self.stop_watch:
+                        # ROI 벗어난 경우 총 체류시간 계산
                         start = self.stop_watch[obj_id]['start']
                         end = self.stop_watch[obj_id]['end']
                         seconds = (end - start) / self.fps
-
-                        # 🔽 여기 추가!
+                       
                         prev_point = self.stop_watch[obj_id].get('prev_pos', curr_point)
                         move_dist = (curr_point - prev_point).manhattanLength()
 
+                        # 불법 정차 감지: 5초 이상 정지 + 이동 거리 10픽셀 이하
+                        # 불법 주정차로 감지된 차량은 콘솔 출력, 영상 위 경고 텍스트 표시, csv 파일에 로그 기록
                         if seconds >= 5 and move_dist < 10:
                             if obj_id not in self.illegal_log:
                                 print(f"🚨 차량 {obj_id} ROI 내 불법정차 {seconds:.1f}초")
@@ -320,6 +333,7 @@ class VideoWindow(QWidget):
 
                         del self.stop_watch[obj_id]
 
+            # 프레임 저장 및 표시 갱신
             self.frame = frame_rgb
             self.update_display_with_lines()
             self.frame_idx += 1
@@ -367,7 +381,7 @@ class VideoWindow(QWidget):
             if desc:
                 painter.drawText(mid_x + 5, mid_y + 30, desc)  # 설명 (조금 아래로)
 
-        # ✅ 영역(사각형) 그리기
+        # 영역(사각형) 그리기
         if hasattr(self, 'stop_polygons'):
             for polygon in self.stop_polygons:
                 if len(polygon) == 4:
@@ -435,7 +449,7 @@ class VideoWindow(QWidget):
 
             self.temp_points.append(corrected_point)
 
-
+            # 선 모드일 경우: 점 2개 찍으면 하나의 선 생성
             if self.draw_mode == 'line' and len(self.temp_points) == 2:
                 existing_ids = [line[2] for line in self.lines]
                 new_id = max(existing_ids, default=0) + 1
@@ -445,7 +459,7 @@ class VideoWindow(QWidget):
                 self.line_number += 1
                 self.temp_points = []
                 self.redo_stack.clear()
-
+            # 영역 모드일 경우: 점 4개 찍으면 사각형 ROI 생성
             elif self.draw_mode == 'area' and len(self.temp_points) == 4:
                 self.stop_polygons.append(self.temp_points.copy())
                 print(f"🚧 정지 감지 영역 {len(self.stop_polygons)} 생성 완료")

@@ -62,10 +62,16 @@ def pixel_to_gps(x, y):
     return (lat, lon)
 
 def crossed_line(p1, p2, prev_pt, curr_pt):
-    # 두 선분 (prev→curr) 과 (p1→p2) 가 교차하는지 판별
-    def ccw(a, b, c):
-        return (c.y() - a.y()) * (b.x() - a.x()) > (b.y() - a.y()) * (c.x() - a.x())
-    return ccw(prev_pt, curr_pt, p1) != ccw(prev_pt, curr_pt, p2) and ccw(p1, p2, prev_pt) != ccw(p1, p2, curr_pt)
+    # QPoint → 튜플로 변환
+    A = (prev_pt.x(), prev_pt.y())
+    B = (curr_pt.x(), curr_pt.y())
+    C = (p1.x(), p1.y())
+    D = (p2.x(), p2.y())
+
+    def ccw(X, Y, Z):
+        return (Z[1] - X[1]) * (Y[0] - X[0]) > (Y[1] - X[1]) * (Z[0] - X[0])
+    
+    return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
 
 def point_in_polygon(pt, polygon):
     pts = np.array([[p.x(), p.y()] for p in polygon], dtype=np.int32).reshape((-1, 1, 2))
