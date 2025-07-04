@@ -1,5 +1,5 @@
-import sys
-import cv2
+import sys, cv2, os
+import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel,
     QHBoxLayout, QVBoxLayout, QPushButton
@@ -7,6 +7,69 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer, Qt, QPoint
 from PyQt5.QtGui import QImage, QPixmap, QKeyEvent, QPainter, QPen, QFont
 from PyQt5.QtWidgets import QLineEdit, QTextEdit
+from datetime import datetime
+
+# 로그 폴더 없으면 생성
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+LABEL_COLORS = {
+    0: (0, 255, 0),      # Green
+    1: (0, 0, 255),      # Red
+    2: (255, 0, 0),      # Blue
+    3: (0, 255, 255),    # Yellow
+    4: (255, 0, 255),    # Magenta
+    5: (255, 255, 0),    # Cyan
+}
+
+DEFAULT_COLOR = (200, 200, 200)
+
+LABEL_NAMES = {
+    0: 'car',
+    1: 'bus_s',
+    2: 'bus_m',
+    3: 'truck_s',
+    4: 'truck_m',
+    5: 'truck_x',
+    6: 'bike'
+}
+
+def read_raw_data(path):
+        frame_data = {}
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                values = list(map(int, line.split(',')))
+                frame, obj_id, x1, y1, x2, y2, label = values
+                if frame not in frame_data:
+                    frame_data[frame] = []
+                frame_data[frame].append((obj_id, x1, y1, x2, y2, label))
+        return frame_data
+
+def pixel_to_gps(x, y):
+    gps1 = (37.401383, 127.112679)
+    gps2 = (37.401371, 127.113207)
+    px1 = (97, 415)
+    px2 = (1342, 452)
+
+    ratio = (x - px1[0]) / (px2[0] - px1[0])
+    lat = gps1[0] + ratio * (gps2[0] - gps1[0])
+    lon = gps1[1] + ratio * (gps2[1] - gps1[1])
+    return (lat, lon)
+
+def crossed_line(p1, p2, prev_pt, curr_pt):
+    # 두 선분 (prev→curr) 과 (p1→p2) 가 교차하는지 판별
+    def ccw(a, b, c):
+        return (c.y() - a.y()) * (b.x() - a.x()) > (b.y() - a.y()) * (c.x() - a.x())
+    return ccw(prev_pt, curr_pt, p1) != ccw(prev_pt, curr_pt, p2) and ccw(p1, p2, prev_pt) != ccw(p1, p2, curr_pt)
+
+def point_in_polygon(pt, polygon):
+    pts = np.array([[p.x(), p.y()] for p in polygon], dtype=np.int32).reshape((-1, 1, 2))
+    return cv2.pointPolygonTest(pts, pt, False) >= 0
 
 class VideoWindow(QWidget):
 
@@ -43,6 +106,11 @@ class VideoWindow(QWidget):
 
         self.right_panel.setLayout(self.right_layout)
 
+        self.label_path = './assets/2024-10-21 08_56_19.337.txt' # 라벨 경로 수정
+        # self.label_path = './assets/2024-10-21 13_13_50.136.txt'  # 라벨 경로 수정
+        self.frame_data = read_raw_data(self.label_path)
+        self.frame_idx = 1  # 프레임 번호 추적
+
         # 닫기 버튼
         self.close_button = QPushButton("닫기", self)
         self.close_button.clicked.connect(self.close)
@@ -71,6 +139,17 @@ class VideoWindow(QWidget):
         self.line_inputs = []  # [(QLineEdit, QTextEdit)]      
         self.redo_stack = []  # 되돌리기에 사용될 스택
 
+        self.crossed_lines = set()  # (obj_id, line_id) 튜플 저장
+
+        self.illegal_log = set()
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.output_csv = f"./logs/illegal_parking_{timestamp}.csv"
+
+        if os.path.exists(self.output_csv):
+            os.remove(self.output_csv)
+        with open(self.output_csv, "w") as f:
+            f.write("frame,obj_id,label,x1,y1,x2,y2,stop_seconds\n")
+
         # ⏯ 영상 첫 프레임 미리 표시
         self.show_first_frame()
 
@@ -93,12 +172,14 @@ class VideoWindow(QWidget):
 
         # 적용 버튼
         self.apply_button = QPushButton("적용")
+   
         self.apply_button.clicked.connect(self.apply_descriptions)
         self.right_layout.addWidget(self.apply_button)
 
         # Undo, Redo 버튼 추가
         self.undo_button = QPushButton("Undo")
         self.redo_button = QPushButton("Redo")
+ 
 
         self.undo_button.clicked.connect(self.handle_undo)
         self.redo_button.clicked.connect(self.handle_redo)
@@ -106,6 +187,45 @@ class VideoWindow(QWidget):
         self.right_layout.addWidget(self.undo_button)
         self.right_layout.addWidget(self.redo_button)
 
+        # 스페이스바로 일시정지 상태 추적
+        self.is_paused = False  
+
+        self.prev_positions = {}  # 차량의 이전 위치 저장
+        self.line_counts = {}     # 선별 카운트 저장
+
+        # 차량 체류시간 측정을 위한 변수
+        self.stop_watch = {}
+
+
+        # 선 모드 / 영역 모드 전환
+        self.draw_mode = 'line'  # 또는 'area'
+        self.temp_points = []    # 클릭한 점들을 여기에 저장
+
+        
+        self.stop_polygons = []  # 다중 사각형 ROI 저장용
+
+        self.line_mode_button = QPushButton("선 모드")
+        self.area_mode_button = QPushButton("영역 모드")
+
+        self.line_mode_button.setCheckable(True)
+        self.area_mode_button.setCheckable(True)
+
+        self.line_mode_button.setChecked(True)  # 기본은 선 모드
+
+        self.line_mode_button.clicked.connect(self.set_line_mode)
+        self.area_mode_button.clicked.connect(self.set_area_mode)
+
+        self.right_layout.addWidget(self.line_mode_button)
+        self.right_layout.addWidget(self.area_mode_button)
+
+        shortcut_label = QLabel("🔑 단축키 안내:\n"
+                        "Enter: 영상 재생/일시정지\n"
+                        "R: 초기화 (리셋)\n"
+                        "Q: 종료")
+        shortcut_label.setStyleSheet("color: gray; font-size: 14px;")
+        self.right_layout.addWidget(shortcut_label)
+
+    
     def show_first_frame(self):
         ret, frame = self.cap.read()
         if not ret:
@@ -116,16 +236,100 @@ class VideoWindow(QWidget):
         self.update_display_with_lines()
 
     def update_frame(self):
-        if not self.drawing_enabled:
-            ret, frame = self.cap.read()
-            if not ret:
-                self.timer.stop()
-                self.cap.release()
-                return
+        if self.is_paused or self.drawing_enabled:
+            return  # 일시정지 상태면 프레임 업데이트 중단
+        
+        ret, frame = self.cap.read()
+        if not ret:
+            self.timer.stop()
+            self.cap.release()
+            return
 
-            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # ✅ 객체 박스 표시
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        if self.frame_idx in self.frame_data:
+            for obj_id, x1, y1, x2, y2, label in self.frame_data[self.frame_idx]:
+                color = LABEL_COLORS.get(label, DEFAULT_COLOR)
+                label_name = LABEL_NAMES.get(label, f"Label:{label}")
+
+                # 바운딩 박스
+                cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), color, 2)
+
+                # 객체 ID + 라벨명
+                cv2.putText(frame_rgb, f"ID:{obj_id}, {label_name}", (x1, y1 - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+                # 중심 좌표 및 원
+                cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                cv2.circle(frame_rgb, (cx, cy), 3, color, -1)
+
+                # GPS 텍스트
+                lat, lon = pixel_to_gps(cx, cy)
+                cv2.putText(frame_rgb, f"({lat:.6f}, {lon:.6f})", (cx + 5, cy + 15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+
+                cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                curr_point = QPoint(cx, cy)
+
+
+                # ✅ 선 통과 감지 추가
+                if obj_id in self.prev_positions:
+                    prev_point = self.prev_positions[obj_id]
+                    for p1, p2, num, _ in self.lines:
+                        if (obj_id, num) not in self.crossed_lines:
+                            if crossed_line(p1, p2, prev_point, curr_point):
+                                self.crossed_lines.add((obj_id, num))
+                                self.line_counts[num] = self.line_counts.get(num, 0) + 1
+                                print(f"🚗 차량 {obj_id} 선 {num} 통과 (총 {self.line_counts[num]}회)")
+
+                self.prev_positions[obj_id] = curr_point
+
+            if hasattr(self, 'stop_polygons'):
+                for polygon in self.stop_polygons:
+                    if len(polygon) == 4 and point_in_polygon((cx, cy), polygon):
+                        self.stop_watch.setdefault(obj_id, {'start': self.frame_idx, 'end': self.frame_idx, 'prev_pos': curr_point})
+                        self.stop_watch[obj_id]['end'] = self.frame_idx
+                        self.stop_watch[obj_id]['prev_pos'] = curr_point
+                        break
+                else:
+                    if obj_id in self.stop_watch:
+                        start = self.stop_watch[obj_id]['start']
+                        end = self.stop_watch[obj_id]['end']
+                        seconds = (end - start) / self.fps
+
+                        # 🔽 여기 추가!
+                        prev_point = self.stop_watch[obj_id].get('prev_pos', curr_point)
+                        move_dist = (curr_point - prev_point).manhattanLength()
+
+                        if seconds >= 5 and move_dist < 10:
+                            if obj_id not in self.illegal_log:
+                                print(f"🚨 차량 {obj_id} ROI 내 불법정차 {seconds:.1f}초")
+                                # 🚨 영상에 표시
+                                cv2.putText(frame_rgb, f"🚨 정차 차량 {obj_id}", (x1, y1 - 30),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                                self.illegal_log.add(obj_id)
+                                with open(self.output_csv, "a", newline='') as f:
+                                    f.write(f"{self.frame_idx},{obj_id},{label_name},{x1},{y1},{x2},{y2},{round(seconds,1)}\n")
+
+                        del self.stop_watch[obj_id]
+
+            self.frame = frame_rgb
             self.update_display_with_lines()
+            self.frame_idx += 1
 
+    def set_line_mode(self):
+        self.draw_mode = 'line'
+        self.line_mode_button.setChecked(True)
+        self.area_mode_button.setChecked(False)
+        self.temp_points.clear()
+
+    def set_area_mode(self):
+        self.draw_mode = 'area'
+        self.line_mode_button.setChecked(False)
+        self.area_mode_button.setChecked(True)
+        self.temp_points.clear()
+                           
     def update_display_with_lines(self):
         h, w, ch = self.frame.shape
         bytes_per_line = ch * w
@@ -151,10 +355,25 @@ class VideoWindow(QWidget):
             mid_y = int((p1.y() + p2.y()) / 2)
             painter.drawText(mid_x + 5, mid_y - 5, str(num))
 
+            count = self.line_counts.get(num, 0)
+            painter.drawText(mid_x + 5, mid_y + 50, f"Count: {count}")
+
             if desc:
                 painter.drawText(mid_x + 5, mid_y + 30, desc)  # 설명 (조금 아래로)
 
+        # ✅ 영역(사각형) 그리기
+        if hasattr(self, 'stop_polygons'):
+            for polygon in self.stop_polygons:
+                if len(polygon) == 4:
+                    pen = QPen(Qt.yellow, 2, Qt.DashLine)
+                    painter.setPen(pen)
+                    painter.drawPolygon(*polygon)
+                    for pt in polygon:
+                        painter.drawEllipse(pt, 4, 4)
+
+
         for pt in self.temp_points:
+            painter.setPen(QPen(Qt.green, 2))
             painter.drawEllipse(pt, 5, 5)
 
         painter.end()
@@ -209,23 +428,61 @@ class VideoWindow(QWidget):
             corrected_point = QPoint(corrected_x, corrected_y)
 
             self.temp_points.append(corrected_point)
-            if len(self.temp_points) == 2:
-                self.lines.append((self.temp_points[0], self.temp_points[1], self.line_number, ""))
+
+
+            if self.draw_mode == 'line' and len(self.temp_points) == 2:
+                existing_ids = [line[2] for line in self.lines]
+                new_id = max(existing_ids, default=0) + 1
+                self.lines.append((self.temp_points[0], self.temp_points[1], new_id, ""))
+                self.temp_points.clear()
+
                 self.line_number += 1
                 self.temp_points = []
                 self.redo_stack.clear()
+
+            elif self.draw_mode == 'area' and len(self.temp_points) == 4:
+                self.stop_polygons.append(self.temp_points.copy())
+                print(f"🚧 정지 감지 영역 {len(self.stop_polygons)} 생성 완료")
+                self.temp_points.clear()
 
             self.update_display_with_lines()
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Q:
-            print("Q 키 눌림 – 종료")
+            print("Q 키 눌림: 종료")
             self.close()
         elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
             if self.drawing_enabled:
-                print("Enter 키 눌림 – 영상 재생 시작")
+                print("Enter 키 눌림: 영상 재생 시작")
                 self.drawing_enabled = False
                 self.timer.start(30)
+            else: # ⏯ 재생 중일 때 Enter로 일시정지 / 재개
+                self.is_paused = not self.is_paused
+                print("⏸ 일시정지" if self.is_paused else "▶ 재생")
+
+        elif event.key() == Qt.Key_R:
+            print("🔁 R 키: 상태 초기화")
+
+            self.lines.clear()
+            self.temp_points.clear()
+            self.stop_polygons = [] # 영역 여러개 저장
+            self.line_counts.clear()
+            self.crossed_lines.clear()
+            self.stop_watch.clear()
+            self.prev_positions.clear()
+            self.line_number = 1
+            self.drawing_enabled = True
+            self.draw_mode = 'line'
+            self.line_mode_button.setChecked(True)
+            self.area_mode_button.setChecked(False)
+
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            self.frame_idx = 1
+            ret, frame = self.cap.read()
+            if ret:
+                self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.update_display_with_lines()
+            self.timer.stop()
 
     def closeEvent(self, event):
         self.cap.release()
@@ -246,6 +503,7 @@ class VideoWindow(QWidget):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     video_path = './assets/2024-10-21 08_56_19.337.mp4'  # 영상 경로 수정
+    # video_path = './assets/2024-10-21 13_13_50.136.mp4'  # 영상 경로 수정
     window = VideoWindow(video_path)
     window.show()
     sys.exit(app.exec_())
