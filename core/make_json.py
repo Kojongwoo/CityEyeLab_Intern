@@ -54,7 +54,7 @@ label_map = {
     6: 'bike'
 }
 
-csv_path = "C:/Work/Projects/Solution_DEV/CITY_TRAFFIC/Working/assets/2024-10-21 08_16_26.63.txt"
+csv_path = "./assets/2024-10-21 08_16_26.63.txt"
 json_path = "output.json"
 
 base_time = datetime.strptime("2024-10-21T08:12:45Z", "%Y-%m-%dT%H:%M:%SZ")

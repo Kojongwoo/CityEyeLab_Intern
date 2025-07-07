@@ -5,7 +5,7 @@
 # - CSV 로그 저장 및 영상 상 시각화
 
 # 작성자: (허종우)
-# 최종 수정일: 2025-07-04
+# 최종 수정일: 2025-07-07
 
 import sys, cv2, os
 import numpy as np
@@ -91,7 +91,7 @@ class VideoWindow(QWidget):
 
     def __init__(self, video_path):
         super().__init__()
-        self.setWindowTitle("PyQt")
+        self.setWindowTitle("TrafficTool")
         
         # ✅ 1. 전체 PyQt 창 크기 고정
         window_width = 1920
@@ -160,10 +160,24 @@ class VideoWindow(QWidget):
         # 불법주정차 결과 저장용 csv 초기화
         self.output_csv = f"./logs/illegal_parking_{timestamp}.csv"
 
+        # # 선 통과 수를 나타내는 QLabel
+        # self.line_count_labels = []
+
+        # # 선 통과 횟수 표시용 라벨 3개 추가
+        # for i in range(3):
+        #     count_label = QLabel(f"선 {i+1} 통과: 0회")
+        #     count_label.setStyleSheet("color: blue; font-size: 14px;")
+        #     self.right_layout.addWidget(count_label)
+        #     self.line_count_labels.append(count_label)
+
+        self.csv_header_written = False  # CSV 헤더를 1번만 쓰기 위한 플래그
+
+
         if os.path.exists(self.output_csv):
             os.remove(self.output_csv)
-        with open(self.output_csv, "w") as f:
-            f.write("frame,obj_id,label,x1,y1,x2,y2,stop_seconds\n")
+
+        # with open(self.output_csv, "w") as f:
+        #     f.write("frame,obj_id,label,x1,y1,x2,y2,stop_seconds\n")
 
         # ⏯ 영상 첫 프레임 미리 표시
         self.show_first_frame()
@@ -171,8 +185,19 @@ class VideoWindow(QWidget):
         # self.showMaximized()
         self.installEventFilter(self)
 
+        # 선 통과 여부 저장용 딕셔너리 추가
+        self.cross_log = {}  # (obj_id, line_id) → 통과 여부
+
+        # # ⏬ CSV 초기화 시 헤더 확장
+        # with open(self.output_csv, "w") as f:
+        #     base = "frame,obj_id,label,x1,y1,x2,y2"
+        #     for i in range(1, self.line_number):
+        #         base += f",line_{i}"
+        #     f.write(base + "\n")
+
+
          # 선 ID, 설명 입력창
-        for i in range(4):
+        for i in range(3):
             id_input = QLineEdit()
             id_input.setPlaceholderText(f"선 ID {i+1}")
 
@@ -296,9 +321,13 @@ class VideoWindow(QWidget):
                                 self.line_counts[num] = self.line_counts.get(num, 0) + 1
                                 print(f"🚗 차량 {obj_id} 선 {num} 통과 (총 {self.line_counts[num]}회)")
 
+                                # 선 통과 기록
+                                if obj_id not in self.cross_log:
+                                    self.cross_log[obj_id] = {}
+                                self.cross_log[obj_id][num] = 1
+
                 # 현재 위치 저장
                 self.prev_positions[obj_id] = curr_point
-
 
             if hasattr(self, 'stop_polygons'):
                 # 정지 감지 및 불법주정차 판단: 현재 위치가 사각형 영역 내에 있는지 확인
@@ -335,6 +364,50 @@ class VideoWindow(QWidget):
 
             # 프레임 저장 및 표시 갱신
             self.frame = frame_rgb
+
+            # 현재 프레임 객체들의 선 통과 여부 기록
+            for obj in self.frame_data.get(self.frame_idx, []):
+                obj_id, x1, y1, x2, y2, label = obj
+                base_info = [self.frame_idx, obj_id, x1, y1, x2, y2, label] # LABEL_NAMES.get(label, label): 라벨명 그대로 출력
+
+                # 선 통과 여부
+                line_states = []
+                for i in range(1, self.line_number):  # 선 번호는 1부터 시작
+                    state = self.cross_log.get(obj_id, {}).get(i, 0)
+                    line_states.append(state)
+
+                # 중심 좌표
+                cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+                # 영역 포함 여부
+                area_states = []
+                for polygon in self.stop_polygons:
+                    if len(polygon) == 4:
+                        inside = point_in_polygon((cx, cy), polygon)
+                        area_states.append(1 if inside else 0)
+                    else:
+                        area_states.append(0)
+
+                # ⏬ CSV 헤더는 1번만 작성
+                if not self.csv_header_written:
+                    with open(self.output_csv, "w") as f:
+                        base = "frame,obj_id,x1,y1,x2,y2,label"
+                        for i in range(1, self.line_number):
+                            base += f",line_{i}"
+                        for j in range(1, len(self.stop_polygons) + 1):
+                            base += f",area_{j}"
+                        f.write(base + "\n")
+                    self.csv_header_written = True
+
+                with open(self.output_csv, "a", newline='') as f:
+                    row = base_info + line_states + area_states
+                    f.write(','.join(map(str, row)) + "\n")
+
+            # ✅ 선 통과 카운트 라벨 갱신
+            for i, label in enumerate(self.line_count_labels, start=1):
+                count = self.line_counts.get(i, 0)
+                label.setText(f"선 {i} 통과: {count}회")
+
             self.update_display_with_lines()
             self.frame_idx += 1
 
@@ -412,7 +485,6 @@ class VideoWindow(QWidget):
 
             if not id_text or not desc_text:
                 continue
-
             try:
                 line_number = int(id_text)
                 for i, (p1, p2, num, desc) in enumerate(self.lines):
@@ -495,6 +567,7 @@ class VideoWindow(QWidget):
             self.draw_mode = 'line'
             self.line_mode_button.setChecked(True)
             self.area_mode_button.setChecked(False)
+            self.cross_log.clear()  # ⏬ 선 통과 상태 초기화
 
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             self.frame_idx = 1
