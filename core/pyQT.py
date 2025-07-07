@@ -15,8 +15,9 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QTimer, Qt, QPoint
 from PyQt5.QtGui import QImage, QPixmap, QKeyEvent, QPainter, QPen, QFont
-from PyQt5.QtWidgets import QLineEdit, QTextEdit
+from PyQt5.QtWidgets import QInputDialog, QFileDialog, QMessageBox
 from datetime import datetime
+from utils import point_in_polygon
 
 # 로그 폴더 없으면 생성
 if not os.path.exists("logs"):
@@ -83,13 +84,10 @@ def crossed_line(p1, p2, prev_pt, curr_pt):
     
     return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
 
-def point_in_polygon(pt, polygon):
-    pts = np.array([[p.x(), p.y()] for p in polygon], dtype=np.int32).reshape((-1, 1, 2))
-    return cv2.pointPolygonTest(pts, pt, False) >= 0
-
 class VideoWindow(QWidget):
 
-    def __init__(self, video_path):
+    # def __init__(self, video_path):
+    def __init__(self, video_path, label_path):
         super().__init__()
         self.setWindowTitle("TrafficTool")
         
@@ -122,7 +120,8 @@ class VideoWindow(QWidget):
 
         self.right_panel.setLayout(self.right_layout)
 
-        self.label_path = './assets/2024-10-21 08_56_19.337.txt' # 라벨 경로 수정
+        self.label_path = label_path
+        # self.label_path = './assets/2024-10-21 08_56_19.337.txt' # 라벨 경로 수정
         # self.label_path = './assets/2024-10-21 13_13_50.136.txt'  # 라벨 경로 수정
         self.frame_data = read_raw_data(self.label_path)
         self.frame_idx = 1  # 프레임 번호 추적
@@ -152,23 +151,14 @@ class VideoWindow(QWidget):
         self.drawing_enabled = True
         self.temp_points = []  # 두 점을 담을 임시 리스트
         self.lines = []        # [(p1, p2, line_number, description)] 형태로 선 저장
-        self.line_inputs = []  # [(QLineEdit, QTextEdit)]      
+        
+        self.undo_stack = []   
         self.redo_stack = []  # 되돌리기에 사용될 스택
 
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
 
         # 불법주정차 결과 저장용 csv 초기화
         self.output_csv = f"./logs/illegal_parking_{timestamp}.csv"
-
-        # # 선 통과 수를 나타내는 QLabel
-        # self.line_count_labels = []
-
-        # # 선 통과 횟수 표시용 라벨 3개 추가
-        # for i in range(3):
-        #     count_label = QLabel(f"선 {i+1} 통과: 0회")
-        #     count_label.setStyleSheet("color: blue; font-size: 14px;")
-        #     self.right_layout.addWidget(count_label)
-        #     self.line_count_labels.append(count_label)
 
         self.csv_header_written = False  # CSV 헤더를 1번만 쓰기 위한 플래그
 
@@ -186,35 +176,11 @@ class VideoWindow(QWidget):
         self.installEventFilter(self)
 
         # 선 통과 여부 저장용 딕셔너리 추가
-        self.cross_log = {}  # (obj_id, line_id) → 통과 여부
+        self.cross_log = set()  # (obj_id, line_id) → 통과 여부
 
-        # # ⏬ CSV 초기화 시 헤더 확장
-        # with open(self.output_csv, "w") as f:
-        #     base = "frame,obj_id,label,x1,y1,x2,y2"
-        #     for i in range(1, self.line_number):
-        #         base += f",line_{i}"
-        #     f.write(base + "\n")
+        self.line_labels = {} # line_id → QLabel 매핑
 
 
-         # 선 ID, 설명 입력창
-        for i in range(3):
-            id_input = QLineEdit()
-            id_input.setPlaceholderText(f"선 ID {i+1}")
-
-            desc_input = QTextEdit()
-            desc_input.setPlaceholderText(f"설명 {i+1}")
-            desc_input.setFixedHeight(120)  # 설명 칸 높이 조절
-
-            self.right_layout.addWidget(id_input)
-            self.right_layout.addWidget(desc_input)
-            
-            self.line_inputs.append((id_input, desc_input))
-
-        # 적용 버튼
-        self.apply_button = QPushButton("적용")
-   
-        self.apply_button.clicked.connect(self.apply_descriptions)
-        self.right_layout.addWidget(self.apply_button)
 
         # Undo, Redo 버튼 추가
         self.undo_button = QPushButton("Undo")
@@ -239,7 +205,7 @@ class VideoWindow(QWidget):
         self.draw_mode = 'line'  # 또는 'area'
         self.temp_points = []    # 클릭한 점들을 여기에 저장
 
-        self.stop_polygons = []  # 다중 사각형 ROI 저장용
+        self.stop_polygons = []  # → [ ([QPoint, QPoint, QPoint, QPoint], "설명"), ... ]
 
         self.line_mode_button = QPushButton("선 모드")
         self.area_mode_button = QPushButton("영역 모드")
@@ -262,6 +228,32 @@ class VideoWindow(QWidget):
         shortcut_label.setStyleSheet("color: gray; font-size: 14px;")
         self.right_layout.addWidget(shortcut_label)
 
+    def get_line_description(self, line_id):
+        for p1, p2, num, desc in self.lines:
+            if num == line_id:
+                return desc
+        return ""
+
+    def inside_for_last_n_frames(self, obj_id, n=10):
+    # """객체가 최근 n프레임 이상 ROI 내에 있었는지"""
+        if obj_id in self.stop_watch:
+            start = self.stop_watch[obj_id]['start']
+            end = self.stop_watch[obj_id]['end']
+            return (end - start) >= n
+        return False
+
+    def recently_crossed_line(self, obj_id):
+        return any(obj == obj_id for obj, _ in self.cross_log)
+
+    def is_within_violation_time(self, now):
+        # """단속 시간대 여부 (08:00~20:00)"""
+        return 8 <= now.hour < 20
+
+    def is_illegal_vehicle_type(self, label):
+        # """불법주정차 대상 차량인지"""
+        exempt_types = ['police', 'ambulance']  # 예외 차량
+        label_name = LABEL_NAMES.get(label, '')
+        return label_name in ['car', 'bus_s', 'bus_m', 'truck_s', 'truck_m', 'truck_x', 'bike']
     
     def show_first_frame(self):
         ret, frame = self.cap.read()
@@ -322,9 +314,7 @@ class VideoWindow(QWidget):
                                 print(f"🚗 차량 {obj_id} 선 {num} 통과 (총 {self.line_counts[num]}회)")
 
                                 # 선 통과 기록
-                                if obj_id not in self.cross_log:
-                                    self.cross_log[obj_id] = {}
-                                self.cross_log[obj_id][num] = 1
+                                self.cross_log.add((obj_id, num))
 
                 # 현재 위치 저장
                 self.prev_positions[obj_id] = curr_point
@@ -350,10 +340,17 @@ class VideoWindow(QWidget):
 
                         # 불법 정차 감지: 5초 이상 정지 + 이동 거리 10픽셀 이하
                         # 불법 주정차로 감지된 차량은 콘솔 출력, 영상 위 경고 텍스트 표시, csv 파일에 로그 기록
-                        if seconds >= 5 and move_dist < 10:
+                        now = datetime.now()
+                        if (
+                            seconds >= 8 and
+                            move_dist < 10 and
+                            self.inside_for_last_n_frames(obj_id, 10) and
+                            not self.recently_crossed_line(obj_id) and
+                            self.is_within_violation_time(now) and
+                            self.is_illegal_vehicle_type(label)
+                        ):
                             if obj_id not in self.illegal_log:
                                 print(f"🚨 차량 {obj_id} ROI 내 불법정차 {seconds:.1f}초")
-                                # 🚨 영상에 표시
                                 cv2.putText(frame_rgb, f"🚨 정차 차량 {obj_id}", (x1, y1 - 30),
                                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                                 self.illegal_log.add(obj_id)
@@ -373,7 +370,7 @@ class VideoWindow(QWidget):
                 # 선 통과 여부
                 line_states = []
                 for i in range(1, self.line_number):  # 선 번호는 1부터 시작
-                    state = self.cross_log.get(obj_id, {}).get(i, 0)
+                    state = 1 if (obj_id, i) in self.cross_log else 0
                     line_states.append(state)
 
                 # 중심 좌표
@@ -403,10 +400,10 @@ class VideoWindow(QWidget):
                     row = base_info + line_states + area_states
                     f.write(','.join(map(str, row)) + "\n")
 
-            # ✅ 선 통과 카운트 라벨 갱신
-            for i, label in enumerate(self.line_count_labels, start=1):
-                count = self.line_counts.get(i, 0)
-                label.setText(f"선 {i} 통과: {count}회")
+            # # ✅ 선 통과 카운트 라벨 갱신
+            for line_id, label in self.line_labels.items():
+                count = self.line_counts.get(line_id, 0)
+                label.setText(f"선 {line_id} ({self.get_line_description(line_id)}): Count: {count}")
 
             self.update_display_with_lines()
             self.frame_idx += 1
@@ -448,21 +445,28 @@ class VideoWindow(QWidget):
             mid_y = int((p1.y() + p2.y()) / 2)
             painter.drawText(mid_x + 5, mid_y - 5, str(num))
 
-            count = self.line_counts.get(num, 0)
-            painter.drawText(mid_x + 5, mid_y + 50, f"Count: {count}")
+            # count = self.line_counts.get(num, 0)
+            # painter.drawText(mid_x + 5, mid_y + 50, f"Count: {count}")
 
             if desc:
                 painter.drawText(mid_x + 5, mid_y + 30, desc)  # 설명 (조금 아래로)
 
-        # 영역(사각형) 그리기
+        # 영역(사각형) 그리기 + 설명 표시
         if hasattr(self, 'stop_polygons'):
-            for polygon in self.stop_polygons:
+            for i, (polygon, desc) in enumerate(self.stop_polygons):
                 if len(polygon) == 4:
                     pen = QPen(Qt.yellow, 2, Qt.DashLine)
                     painter.setPen(pen)
                     painter.drawPolygon(*polygon)
                     for pt in polygon:
                         painter.drawEllipse(pt, 4, 4)
+
+                    # 중심 좌표 계산
+                    cx = sum([pt.x() for pt in polygon]) // 4
+                    cy = sum([pt.y() for pt in polygon]) // 4
+
+                    # 설명 텍스트 출력
+                    painter.drawText(cx + 5, cy - 5, f"{i+1}. {desc}")
 
 
         for pt in self.temp_points:
@@ -477,29 +481,6 @@ class VideoWindow(QWidget):
             Qt.IgnoreAspectRatio,
             Qt.SmoothTransformation
         ))
-
-    def apply_descriptions(self):
-        for id_input, desc_input in self.line_inputs:
-            id_text = id_input.text().strip()
-            desc_text = desc_input.toPlainText().strip()
-
-            if not id_text or not desc_text:
-                continue
-            try:
-                line_number = int(id_text)
-                for i, (p1, p2, num, desc) in enumerate(self.lines):
-                    if num == line_number:
-                        self.lines[i] = (p1, p2, num, desc_text)
-                        break
-            except ValueError:
-                print(f"'{id_text}'는 유효한 선 번호가 아닙니다.")
-
-        self.update_display_with_lines()
-
-        # 입력창 초기화
-        for id_input, desc_input in self.line_inputs:
-            id_input.clear()
-            desc_input.clear()
 
     def handle_mouse_press(self, event):
         if self.drawing_enabled and event.button() == Qt.LeftButton:
@@ -525,18 +506,53 @@ class VideoWindow(QWidget):
             if self.draw_mode == 'line' and len(self.temp_points) == 2:
                 existing_ids = [line[2] for line in self.lines]
                 new_id = max(existing_ids, default=0) + 1
-                self.lines.append((self.temp_points[0], self.temp_points[1], new_id, ""))
-                self.temp_points.clear()
 
-                self.line_number += 1
-                self.temp_points = []
-                self.redo_stack.clear()
+                text, ok = QInputDialog.getText(self, f"선 {new_id} 설명 입력", "이 선에 대한 설명을 입력하세요:")
+
+            # 👉 설명 입력 받기
+                if ok and text.strip(): 
+                    description = text.strip()
+
+                    line_obj = (self.temp_points[0], self.temp_points[1], new_id, description)
+                    self.lines.append(line_obj)
+
+                    # 👉 오른쪽 Count 표시 라벨 생성
+                    label = QLabel(f"선 {new_id} ({description}): Count: 0")
+                    label.setStyleSheet("color: darkred; font-size: 14px;")
+                    self.right_layout.addWidget(label)
+                    self.line_labels[new_id] = label
+                    label.setWordWrap(True)
+
+                    self.undo_stack.append(("line", line_obj))  # 🔥 추가!
+                    self.line_number += 1
+                    self.redo_stack.clear()
+                else:
+                    print("설명이 입력되지 않아 선이 생성되지 않습니다.")
+                    self.temp_points.clear()
+                    self.update_display_with_lines()             # 💡 화면 갱신
+                    return
+                self.temp_points.clear()
+                self.update_display_with_lines()
+
             # 영역 모드일 경우: 점 4개 찍으면 사각형 ROI 생성
             elif self.draw_mode == 'area' and len(self.temp_points) == 4:
-                self.stop_polygons.append(self.temp_points.copy())
-                print(f"🚧 정지 감지 영역 {len(self.stop_polygons)} 생성 완료")
-                self.temp_points.clear()
+                polygon = self.temp_points.copy()
 
+                # ✨ 설명 입력 받기
+                text, ok = QInputDialog.getText(self, f"영역 {len(self.stop_polygons)+1} 설명", "이 영역에 대한 설명을 입력하세요:")
+                
+                if ok and text.strip():
+                    description = text.strip()
+                    area_obj = (polygon, description)
+                    self.stop_polygons.append(area_obj)
+                    self.undo_stack.append(("area", area_obj))  # 🔥 추가!
+                    print(f"🚧 정지 감지 영역 {len(self.stop_polygons)} 생성 완료")
+                else:
+                    print("설명이 입력되지 않아 영역이 생성되지 않습니다.")
+                    self.temp_points.clear()
+                    self.update_display_with_lines()
+                
+                self.temp_points.clear()
             self.update_display_with_lines()
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -582,21 +598,74 @@ class VideoWindow(QWidget):
         event.accept()
 
     def handle_undo(self):
-        if self.lines:
-            last_line = self.lines.pop()
-            self.redo_stack.append(last_line)
-            self.update_display_with_lines()
+        if not self.undo_stack:
+            return
+        last_type, last_obj = self.undo_stack.pop()
+        self.redo_stack.append((last_type, last_obj))
+
+        if last_type == "line":
+            if last_obj in self.lines:
+                self.lines.remove(last_obj)
+                line_id = last_obj[2]
+
+                if line_id in self.line_labels:
+                    label = self.line_labels.pop(line_id)
+                    self.right_layout.removeWidget(label)
+                    label.deleteLater()
+
+        elif last_type == "area":
+            if last_obj in self.stop_polygons:
+                self.stop_polygons.remove(last_obj)
+
+        self.update_display_with_lines()
 
     def handle_redo(self):
-        if self.redo_stack:
-            line = self.redo_stack.pop()
-            self.lines.append(line)
-            self.update_display_with_lines()
+        if not self.redo_stack:
+            return
+        item_type, item = self.redo_stack.pop()
+        self.undo_stack.append((item_type, item))
+
+        if item_type == "line":
+            self.lines.append(item)
+        elif item_type == "area":
+            self.stop_polygons.append(item)
+
+        self.update_display_with_lines()
+
+# if __name__ == '__main__':
+#     app = QApplication(sys.argv)
+#     video_path = './assets/2024-10-21 08_56_19.337.mp4'  # 영상 경로 수정
+#     # video_path = './assets/2024-10-21 13_13_50.136.mp4'  # 영상 경로 수정
+#     window = VideoWindow(video_path)
+#     window.show()
+#     sys.exit(app.exec_())
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    video_path = './assets/2024-10-21 08_56_19.337.mp4'  # 영상 경로 수정
-    # video_path = './assets/2024-10-21 13_13_50.136.mp4'  # 영상 경로 수정
-    window = VideoWindow(video_path)
+
+    # ✅ 영상 파일 선택
+    video_path, _ = QFileDialog.getOpenFileName(
+        None,
+        "영상 파일 선택",
+        "./assets",
+        "Video Files (*.mp4 *.avi *.mov);;All Files (*)"
+    )
+    if not video_path:
+        QMessageBox.warning(None, "경고", "영상 파일을 선택하지 않으면 프로그램이 종료됩니다.")
+        sys.exit()
+
+    # ✅ 라벨 파일 선택
+    label_path, _ = QFileDialog.getOpenFileName(
+        None,
+        "라벨 텍스트 파일 선택",
+        "./assets",
+        "Text Files (*.txt);;All Files (*)"
+    )
+    if not label_path:
+        QMessageBox.warning(None, "경고", "라벨 파일을 선택하지 않으면 프로그램이 종료됩니다.")
+        sys.exit()
+
+    # ✅ 창 열기
+    window = VideoWindow(video_path, label_path)
     window.show()
     sys.exit(app.exec_())
