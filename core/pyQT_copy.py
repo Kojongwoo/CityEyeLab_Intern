@@ -5,17 +5,17 @@
 # - CSV 로그 저장 및 영상 상 시각화
 
 # 작성자: (허종우)
-# 최종 수정일: 2025-07-07
+# 최종 수정일: 2025-07-08
 
 import sys, cv2, os
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel,
-    QHBoxLayout, QVBoxLayout, QPushButton
+    QHBoxLayout, QVBoxLayout, QPushButton, QInputDialog,
+    QFileDialog, QMessageBox,  QSlider, QLineEdit
 )
 from PyQt5.QtCore import QTimer, Qt, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QKeyEvent, QPainter, QPen, QFont
-from PyQt5.QtWidgets import QInputDialog, QFileDialog, QMessageBox
+from PyQt5.QtGui import QImage, QPixmap, QKeyEvent, QPainter, QPen, QFont, QBrush, QColor
 from datetime import datetime
 from utils import point_in_polygon
 
@@ -84,6 +84,24 @@ def crossed_line(p1, p2, prev_pt, curr_pt):
     
     return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
 
+# def draw_transparent_polygon(frame, polygon, color=(0, 255, 0), alpha=0.2):
+#     overlay = frame.copy()
+#     pts = np.array([[pt.x(), pt.y()] for pt in polygon], np.int32)
+#     pts = pts.reshape((-1, 1, 2))
+#     cv2.fillPoly(overlay, [pts], color)
+#     cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+
+def draw_qt_transparent_polygon(painter, polygon, color=Qt.green, alpha=80):
+    color_with_alpha = QColor(color)
+    color_with_alpha.setAlpha(alpha)
+    brush = QBrush(color_with_alpha)
+    painter.setBrush(brush)
+
+    pts = [pt for pt in polygon]
+    painter.drawPolygon(*pts)
+
+    painter.setBrush(Qt.NoBrush)  # 그 후 다시 원래대로 되돌림
+
 class VideoWindow(QWidget):
 
     # def __init__(self, video_path):
@@ -92,8 +110,8 @@ class VideoWindow(QWidget):
         self.setWindowTitle("TrafficTool")
         
         # ✅ 1. 전체 PyQt 창 크기 고정
-        window_width = 1920
-        window_height = 1000
+        window_width = 1800
+        window_height = 900
 
         self.line_number = 1
         
@@ -108,15 +126,16 @@ class VideoWindow(QWidget):
         self.video_label.mousePressEvent = self.handle_mouse_press  # ✅ 마우스 클릭 이벤트 등록
         
         # 영상 QLabel 크기 = 전체 창의 90%
-        video_width = int(window_width * 0.9)
-        video_height = int(window_height * 0.9)
+        video_width = int(window_width * 0.8)
+        video_height = int(window_height * 0.95)
         self.video_label.setFixedSize(video_width, video_height)
         
         self.right_panel = QWidget(self)
+        self.right_panel.setFixedWidth(360)  # 너비 고정 (원하는 값)
         self.right_layout = QVBoxLayout()
         self.right_layout.setAlignment(Qt.AlignTop)  # 핵심: 위로 정렬
         self.right_layout.setContentsMargins(0, 0, 0, 0)
-        self.right_layout.setSpacing(6)
+        self.right_layout.setSpacing(12)
 
         self.right_panel.setLayout(self.right_layout)
 
@@ -132,12 +151,14 @@ class VideoWindow(QWidget):
 
         # 수평 레이아웃: 왼쪽 영상 + 오른쪽 빈 영역
         hbox = QHBoxLayout()
-        hbox.addWidget(self.video_label, 8)  
-        hbox.addWidget(self.right_panel, 2)  
+        hbox.setSpacing(20)  # ← 영상과 오른쪽 패널 사이 간격 설정
+        hbox.addWidget(self.video_label, stretch = 0)  
+        hbox.addWidget(self.right_panel)  
 
         # 수직 레이아웃: 영상 + 버튼
         vbox = QVBoxLayout()
         vbox.addLayout(hbox)
+        vbox.setAlignment(hbox, Qt.AlignTop)  # ✅ 위쪽 정렬 추가
         vbox.addWidget(self.close_button)
 
         self.setLayout(vbox)
@@ -145,15 +166,14 @@ class VideoWindow(QWidget):
         # 영상 타이머 초기화 (정지 상태)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
-        # self.timer.start(30) # 초기에는 멈춘 상태!
 
         # 선 그리기 관련 변수
         self.drawing_enabled = True
         self.temp_points = []  # 두 점을 담을 임시 리스트
         self.lines = []        # [(p1, p2, line_number, description)] 형태로 선 저장
         
-        self.undo_stack = []   
-        self.redo_stack = []  # 되돌리기에 사용될 스택
+        # self.undo_stack = []   
+        # self.redo_stack = []  # 되돌리기에 사용될 스택
 
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
 
@@ -162,12 +182,8 @@ class VideoWindow(QWidget):
 
         self.csv_header_written = False  # CSV 헤더를 1번만 쓰기 위한 플래그
 
-
         if os.path.exists(self.output_csv):
             os.remove(self.output_csv)
-
-        # with open(self.output_csv, "w") as f:
-        #     f.write("frame,obj_id,label,x1,y1,x2,y2,stop_seconds\n")
 
         # ⏯ 영상 첫 프레임 미리 표시
         self.show_first_frame()
@@ -180,15 +196,11 @@ class VideoWindow(QWidget):
 
         self.line_labels = {} # line_id → QLabel 매핑
 
-
-
-        # Undo, Redo 버튼 추가
-        self.undo_button = QPushButton("Undo")
-        self.redo_button = QPushButton("Redo")
-        self.undo_button.clicked.connect(self.handle_undo)
-        self.redo_button.clicked.connect(self.handle_redo)
-        self.right_layout.addWidget(self.undo_button)
-        self.right_layout.addWidget(self.redo_button)
+        # 선/버튼과 ID 간 매핑 구조 추가
+        self.line_widgets = {}  # line_id → QWidget
+        self.area_labels = {}
+        self.area_widgets = {}
+        self.area_number = 1
 
         # 일시정지 상태 추적
         self.is_paused = False  
@@ -209,7 +221,10 @@ class VideoWindow(QWidget):
 
         self.line_mode_button = QPushButton("선 모드")
         self.area_mode_button = QPushButton("영역 모드")
-
+        self.line_mode_button.setFixedHeight(40)   # 기본은 25~30, 이건 더 큼직
+        self.area_mode_button.setFixedHeight(40)
+        self.line_mode_button.setStyleSheet("font-size: 14px;")
+        self.area_mode_button.setStyleSheet("font-size: 14px;")
         self.line_mode_button.setCheckable(True)
         self.area_mode_button.setCheckable(True)
 
@@ -221,18 +236,77 @@ class VideoWindow(QWidget):
         self.right_layout.addWidget(self.line_mode_button)
         self.right_layout.addWidget(self.area_mode_button)
 
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
         shortcut_label = QLabel("🔑 단축키 안내:\n"
                         "Enter: 영상 재생/일시정지\n"
+                        "A: 이전 프레임\n"
+                        "D: 다음 프레임\n"
                         "R: 초기화 (리셋)\n"
                         "Q: 종료")
-        shortcut_label.setStyleSheet("color: gray; font-size: 14px;")
+
+        shortcut_label.setMinimumHeight(120)  # 🔥 이게 핵심!
+        shortcut_label.setStyleSheet("color: black; font-size: 24px; line-height: 160%;")
         self.right_layout.addWidget(shortcut_label)
+
+        self.frame_label = QLabel("프레임: 1")
+        self.frame_label.setStyleSheet("color: navy; font-size: 20px;")
+        self.right_layout.addWidget(self.frame_label)
+
+        self.frame_slider = QSlider(Qt.Horizontal)
+        self.frame_slider.setMinimum(1)
+        self.frame_slider.setMaximum(self.total_frames)
+        self.frame_slider.setValue(self.frame_idx)
+        self.frame_slider.setTickInterval(1)
+        self.frame_slider.setSingleStep(1)
+        self.frame_slider.sliderReleased.connect(self.handle_slider_moved)
+        self.right_layout.addWidget(self.frame_slider)
+
+        # 프레임 검색 입력창 + 버튼
+        self.search_frame_input = QLineEdit()
+        self.search_frame_input.setPlaceholderText("프레임 번호 입력")
+        self.search_frame_input.setFixedWidth(120)
+
+        self.search_frame_button = QPushButton("이동")
+        self.search_frame_button.clicked.connect(self.jump_to_frame)
+
+        # 수평으로 묶기
+        frame_jump_layout = QHBoxLayout()
+        frame_jump_layout.addWidget(self.search_frame_input)
+        frame_jump_layout.addWidget(self.search_frame_button)
+        self.right_layout.addLayout(frame_jump_layout)
+
+        self.force_draw_objects = False  # 👉 객체 박스 강제 그리기 용도
 
     def get_line_description(self, line_id):
         for p1, p2, num, desc in self.lines:
             if num == line_id:
                 return desc
         return ""
+    
+    def jump_to_frame(self):
+        text = self.search_frame_input.text().strip()
+        if not text.isdigit():
+            QMessageBox.warning(self, "입력 오류", "숫자만 입력해주세요.")
+            return
+
+        frame_number = int(text)
+        if not (1 <= frame_number <= self.total_frames):
+            QMessageBox.warning(self, "범위 오류", f"1 ~ {self.total_frames} 사이의 값을 입력해주세요.")
+            return
+
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number - 1)
+        ret, frame = self.cap.read()
+        if ret:
+            self.frame_idx = frame_number
+            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.frame_label.setText(f"프레임: {self.frame_idx}")
+            self.frame_slider.setValue(self.frame_idx)
+            self.update_display_with_lines()
+
+            self.force_draw_objects = True
+            self.update_frame()
+            self.force_draw_objects = False
 
     def inside_for_last_n_frames(self, obj_id, n=10):
     # """객체가 최근 n프레임 이상 ROI 내에 있었는지"""
@@ -266,17 +340,24 @@ class VideoWindow(QWidget):
 
     def update_frame(self):
         # 일시정지 상태 또는 선/영역 그리기 중일 경우 프레임 처리 중단
-        if self.is_paused or self.drawing_enabled:
-            return  
+        if (self.is_paused or self.drawing_enabled) and not self.force_draw_objects:
+            return 
         # 다음 프레임 읽기
         ret, frame = self.cap.read()
         if not ret:
+            print("영상 끝에 도달했습니다.")
             self.timer.stop()
-            self.cap.release()
+            # self.cap.release()
             return
 
         # BGR → RGB 변환
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # # ✅ 모든 프레임에 대해 ROI 영역을 반투명으로 채우기
+        # if hasattr(self, 'stop_polygons'):
+        #     for polygon in self.stop_polygons:
+        #         if len(polygon) == 4:
+        #             draw_transparent_polygon(frame_rgb, polygon, color=(0, 128, 0), alpha=0.25)
 
         if self.frame_idx in self.frame_data:
             # 현재 프레임의 객체 정보 처리
@@ -319,9 +400,15 @@ class VideoWindow(QWidget):
                 # 현재 위치 저장
                 self.prev_positions[obj_id] = curr_point
 
-            if hasattr(self, 'stop_polygons'):
-                # 정지 감지 및 불법주정차 판단: 현재 위치가 사각형 영역 내에 있는지 확인
+            # if hasattr(self, 'stop_polygons'):
+            #     # 각 ROI를 반투명으로 채움
+            #     for polygon in self.stop_polygons:
+            #         if len(polygon) == 4:
+            #             draw_transparent_polygon(frame_rgb, polygon, color=(0, 128, 0), alpha=0.25)                
+
+                # 정지 감지 및 불법주정차 판단:
                 for polygon in self.stop_polygons:
+
                     if len(polygon) == 4 and point_in_polygon((cx, cy), polygon):
                         # 현재 객체가 정지 감지 영역에 있는 경우
                         self.stop_watch.setdefault(obj_id, {'start': self.frame_idx, 'end': self.frame_idx, 'prev_pos': curr_point})
@@ -406,7 +493,10 @@ class VideoWindow(QWidget):
                 label.setText(f"선 {line_id} ({self.get_line_description(line_id)}): Count: {count}")
 
             self.update_display_with_lines()
-            self.frame_idx += 1
+            self.frame_label.setText(f"프레임: {self.frame_idx}")  # ✅ 현재 프레임 표시
+            self.frame_slider.setValue(self.frame_idx)
+            if not self.force_draw_objects:
+                self.frame_idx += 1
 
     def set_line_mode(self):
         self.draw_mode = 'line'
@@ -436,6 +526,7 @@ class VideoWindow(QWidget):
         # 글꼴 크기 조정
         font = QFont()
         font.setPointSize(15)
+        font.setBold(True)
         painter.setFont(font)
 
         # 선, 번호 그리기
@@ -445,27 +536,26 @@ class VideoWindow(QWidget):
             mid_y = int((p1.y() + p2.y()) / 2)
             painter.drawText(mid_x + 5, mid_y - 5, str(num))
 
-            # count = self.line_counts.get(num, 0)
-            # painter.drawText(mid_x + 5, mid_y + 50, f"Count: {count}")
-
             if desc:
                 painter.drawText(mid_x + 5, mid_y + 30, desc)  # 설명 (조금 아래로)
 
-        # 영역(사각형) 그리기 + 설명 표시
+        # 영역(사각형) 그리기 + 반투명 채우기 + 설명 표시
         if hasattr(self, 'stop_polygons'):
             for i, (polygon, desc) in enumerate(self.stop_polygons):
                 if len(polygon) == 4:
-                    pen = QPen(Qt.yellow, 2, Qt.DashLine)
+                    # ✅ 1) 반투명 채우기 먼저
+                    draw_qt_transparent_polygon(painter, polygon, Qt.green, alpha=80)
+
+                    # ✅ 2) 외곽선 그리기
+                    pen = QPen(Qt.green, 2, Qt.SolidLine)
                     painter.setPen(pen)
                     painter.drawPolygon(*polygon)
                     for pt in polygon:
                         painter.drawEllipse(pt, 4, 4)
 
-                    # 중심 좌표 계산
+                    # ✅ 3) 텍스트 표시
                     cx = sum([pt.x() for pt in polygon]) // 4
                     cy = sum([pt.y() for pt in polygon]) // 4
-
-                    # 설명 텍스트 출력
                     painter.drawText(cx + 5, cy - 5, f"{i+1}. {desc}")
 
 
@@ -518,14 +608,36 @@ class VideoWindow(QWidget):
 
                     # 👉 오른쪽 Count 표시 라벨 생성
                     label = QLabel(f"선 {new_id} ({description}): Count: 0")
-                    label.setStyleSheet("color: darkred; font-size: 14px;")
-                    self.right_layout.addWidget(label)
+                    label.setStyleSheet("color: red; font-size: 16px;; font-weight: bold;")
+                    
+                    edit_btn = QPushButton("수정")
+                    delete_btn = QPushButton("삭제")
+                    edit_btn.setFixedSize(60, 30)
+                    delete_btn.setFixedSize(60, 30)
+
+                    # 👉 버튼 기능 연결
+                    edit_btn.clicked.connect(lambda _, lid=new_id: self.edit_line_description(lid))
+                    delete_btn.clicked.connect(lambda _, lid=new_id: self.delete_line(lid))
+
+                    # 👉 수평으로 묶기
+                    line_widget = QWidget()
+                    line_layout = QHBoxLayout()
+                    line_layout.addWidget(label)
+                    line_layout.addWidget(edit_btn)
+                    line_layout.addWidget(delete_btn)
+                    line_layout.setContentsMargins(0, 0, 0, 0)
+                    line_widget.setLayout(line_layout)
+
+                    self.right_layout.addWidget(line_widget)
                     self.line_labels[new_id] = label
+                    self.line_widgets[new_id] = line_widget
+
+                    # 👉 라벨에 단어 줄바꿈 설정
                     label.setWordWrap(True)
 
-                    self.undo_stack.append(("line", line_obj))  # 🔥 추가!
+                    # self.undo_stack.append(("line", line_obj))  # 🔥 추가!
                     self.line_number += 1
-                    self.redo_stack.clear()
+                    # self.redo_stack.clear()
                 else:
                     print("설명이 입력되지 않아 선이 생성되지 않습니다.")
                     self.temp_points.clear()
@@ -545,7 +657,34 @@ class VideoWindow(QWidget):
                     description = text.strip()
                     area_obj = (polygon, description)
                     self.stop_polygons.append(area_obj)
-                    self.undo_stack.append(("area", area_obj))  # 🔥 추가!
+
+                    area_id = len(self.stop_polygons)
+                    label = QLabel(f"영역 {area_id} ({description})")
+                    label.setStyleSheet("color: green; font-size: 16px; font-weight: bold;")
+
+                    edit_btn = QPushButton("수정")
+                    delete_btn = QPushButton("삭제")
+                    edit_btn.setFixedSize(60, 30)
+                    delete_btn.setFixedSize(60, 30)
+
+                    # 기능 연결
+                    edit_btn.clicked.connect(lambda _, aid=area_id: self.edit_area_description(aid))
+                    delete_btn.clicked.connect(lambda _, aid=area_id: self.delete_area(aid))
+
+                    area_widget = QWidget()
+                    layout = QHBoxLayout()
+                    layout.addWidget(label)
+                    layout.addWidget(edit_btn)
+                    layout.addWidget(delete_btn)
+                    layout.setContentsMargins(0, 0, 0, 0)
+                    area_widget.setLayout(layout)
+
+                    self.right_layout.addWidget(area_widget)
+                    self.area_labels[area_id] = label
+                    self.area_widgets[area_id] = area_widget
+                    # self.area_number += 1
+
+                    # self.undo_stack.append(("area", area_obj))  # 🔥 추가!
                     print(f"🚧 정지 감지 영역 {len(self.stop_polygons)} 생성 완료")
                 else:
                     print("설명이 입력되지 않아 영역이 생성되지 않습니다.")
@@ -554,6 +693,54 @@ class VideoWindow(QWidget):
                 
                 self.temp_points.clear()
             self.update_display_with_lines()
+
+    def edit_line_description(self, line_id):
+        old_desc = self.get_line_description(line_id)
+        text, ok = QInputDialog.getText(self, f"선 {line_id} 설명 수정", "새 설명을 입력하세요:", text=old_desc)
+        if ok and text.strip():
+            new_desc = text.strip()
+            for idx, (p1, p2, num, desc) in enumerate(self.lines):
+                if num == line_id:
+                    self.lines[idx] = (p1, p2, num, new_desc)
+                    break
+            self.line_labels[line_id].setText(f"선 {line_id} ({new_desc}): Count: {self.line_counts.get(line_id, 0)}")
+            self.update_display_with_lines()
+
+    def delete_line(self, line_id):
+        self.lines = [line for line in self.lines if line[2] != line_id]
+        if line_id in self.line_labels:
+            self.line_labels[line_id].deleteLater()
+            del self.line_labels[line_id]
+        if line_id in self.line_widgets:
+            self.right_layout.removeWidget(self.line_widgets[line_id])
+            self.line_widgets[line_id].deleteLater()
+            del self.line_widgets[line_id]
+        self.update_display_with_lines()
+
+    def edit_area_description(self, area_id):
+        if area_id - 1 < len(self.stop_polygons):
+            polygon, old_desc = self.stop_polygons[area_id - 1]
+            text, ok = QInputDialog.getText(self, f"영역 {area_id} 설명 수정", "새 설명을 입력하세요:", text=old_desc)
+            if ok and text.strip():
+                new_desc = text.strip()
+                self.stop_polygons[area_id - 1] = (polygon, new_desc)
+                self.area_labels[area_id].setText(f"영역 {area_id} ({new_desc})")
+                self.update_display_with_lines()
+
+    def delete_area(self, area_id):
+        if area_id - 1 < len(self.stop_polygons):
+            del self.stop_polygons[area_id - 1]
+
+        if area_id in self.area_labels:
+            self.area_labels[area_id].deleteLater()
+            del self.area_labels[area_id]
+
+        if area_id in self.area_widgets:
+            self.right_layout.removeWidget(self.area_widgets[area_id])
+            self.area_widgets[area_id].deleteLater()
+            del self.area_widgets[area_id]
+
+        self.update_display_with_lines()
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Q:
@@ -585,52 +772,86 @@ class VideoWindow(QWidget):
             self.area_mode_button.setChecked(False)
             self.cross_log.clear()  # ⏬ 선 통과 상태 초기화
 
+
+            # 👉 선/영역 관련 위젯들 제거
+            for widget in self.line_widgets.values():
+                self.right_layout.removeWidget(widget)
+                widget.deleteLater()
+            self.line_widgets.clear()
+
+            for widget in self.area_widgets.values():
+                self.right_layout.removeWidget(widget)
+                widget.deleteLater()
+            self.area_widgets.clear()
+
+            self.line_labels.clear()
+            self.area_labels.clear()
+            self.area_number = 1
+
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             self.frame_idx = 1
+            self.frame_label.setText("프레임: 1")  # ✅ 프레임 라벨도 초기화
+            self.frame_slider.setValue(1)  # ✅ 트랙바도 1로 초기화
+
+            self.search_frame_input.clear()
+
             ret, frame = self.cap.read()
             if ret:
                 self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             self.update_display_with_lines()
             self.timer.stop()
 
+
+        elif event.key() == Qt.Key_A:  # 이전 프레임
+            if self.frame_idx <= 1:
+                print("첫 프레임입니다.")
+                return
+            if self.frame_idx > 1:
+                self.frame_idx -= 1
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_idx - 1)
+                ret, frame = self.cap.read()
+                if ret:
+                    self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    self.frame_label.setText(f"프레임: {self.frame_idx}")
+                    self.frame_slider.setValue(self.frame_idx)
+
+                    self.force_draw_objects = True
+                    self.update_frame()
+                    self.force_draw_objects = False
+                    
+
+        elif event.key() == Qt.Key_D:
+            if self.frame_idx >= self.total_frames:
+                print("마지막 프레임입니다.")
+                return
+            self.frame_idx += 1
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_idx - 1)
+            ret, frame = self.cap.read()
+            if ret:
+                self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self.frame_label.setText(f"프레임: {self.frame_idx}")
+                self.frame_slider.setValue(self.frame_idx)
+
+                self.force_draw_objects = True
+                self.update_frame()
+                self.force_draw_objects = False
+                
+  
+    def handle_slider_moved(self):
+        value = self.frame_slider.value()
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, value - 1)
+
+        self.frame_idx = value
+        self.frame_label.setText(f"프레임: {self.frame_idx}")
+        self.frame_slider.setValue(self.frame_idx)
+
+        self.force_draw_objects = True
+        self.update_frame()
+        self.force_draw_objects = False
+
     def closeEvent(self, event):
         self.cap.release()
         event.accept()
-
-    def handle_undo(self):
-        if not self.undo_stack:
-            return
-        last_type, last_obj = self.undo_stack.pop()
-        self.redo_stack.append((last_type, last_obj))
-
-        if last_type == "line":
-            if last_obj in self.lines:
-                self.lines.remove(last_obj)
-                line_id = last_obj[2]
-
-                if line_id in self.line_labels:
-                    label = self.line_labels.pop(line_id)
-                    self.right_layout.removeWidget(label)
-                    label.deleteLater()
-
-        elif last_type == "area":
-            if last_obj in self.stop_polygons:
-                self.stop_polygons.remove(last_obj)
-
-        self.update_display_with_lines()
-
-    def handle_redo(self):
-        if not self.redo_stack:
-            return
-        item_type, item = self.redo_stack.pop()
-        self.undo_stack.append((item_type, item))
-
-        if item_type == "line":
-            self.lines.append(item)
-        elif item_type == "area":
-            self.stop_polygons.append(item)
-
-        self.update_display_with_lines()
 
 # if __name__ == '__main__':
 #     app = QApplication(sys.argv)
