@@ -7,12 +7,12 @@
 # 작성자: (허종우)
 # 최종 수정일: 2025-07-08
 
-import sys, cv2, os
+import sys, cv2, os, copy
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel,
     QHBoxLayout, QVBoxLayout, QPushButton, QInputDialog,
-    QFileDialog, QMessageBox,  QSlider, QLineEdit
+    QFileDialog, QMessageBox,  QSlider, QLineEdit, QComboBox
 )
 from PyQt5.QtCore import QTimer, Qt, QPoint
 from PyQt5.QtGui import QImage, QPixmap, QKeyEvent, QPainter, QPen, QFont, QBrush, QColor
@@ -59,7 +59,7 @@ def read_raw_data(path):
                     frame_data[frame] = []
                 frame_data[frame].append((obj_id, x1, y1, x2, y2, label))
         return frame_data
-
+    
 def pixel_to_gps(x, y):
     gps1 = (37.401383, 127.112679)
     gps2 = (37.401371, 127.113207)
@@ -105,9 +105,15 @@ def draw_qt_transparent_polygon(painter, polygon, color=Qt.green, alpha=80):
 class VideoWindow(QWidget):
 
     # def __init__(self, video_path):
-    def __init__(self, video_path, label_path):
+    def __init__(self, video_label_pairs):
         super().__init__()
         self.setWindowTitle("TrafficTool")
+        self.video_label_pairs = video_label_pairs  # 전체 쌍
+        self.current_index = 0
+
+        video_path, label_path = self.video_label_pairs[self.current_index]
+        self.video_path = video_path
+        self.label_path = label_path
         
         # ✅ 1. 전체 PyQt 창 크기 고정
         window_width = 1800
@@ -139,11 +145,22 @@ class VideoWindow(QWidget):
 
         self.right_panel.setLayout(self.right_layout)
 
+        # GUI 상단에 QComboBox 추가
+        self.file_selector = QComboBox()
+        for v, l in self.video_label_pairs:
+            name = os.path.basename(v)
+            self.file_selector.addItem(name)
+
+        self.file_selector.currentIndexChanged.connect(self.change_file)
+        self.right_layout.addWidget(self.file_selector)
+
         self.label_path = label_path
         # self.label_path = './assets/2024-10-21 08_56_19.337.txt' # 라벨 경로 수정
         # self.label_path = './assets/2024-10-21 13_13_50.136.txt'  # 라벨 경로 수정
         self.frame_data = read_raw_data(self.label_path)
         self.frame_idx = 1  # 프레임 번호 추적
+
+        self.per_file_states = {}  # 각 영상별 상태 저장용 딕셔너리
 
         # 닫기 버튼
         self.close_button = QPushButton("닫기", self)
@@ -171,16 +188,14 @@ class VideoWindow(QWidget):
         self.drawing_enabled = True
         self.temp_points = []  # 두 점을 담을 임시 리스트
         self.lines = []        # [(p1, p2, line_number, description)] 형태로 선 저장
-        
-        # self.undo_stack = []   
-        # self.redo_stack = []  # 되돌리기에 사용될 스택
 
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
 
         # 불법주정차 결과 저장용 csv 초기화
-        self.output_csv = f"./logs/illegal_parking_{timestamp}.csv"
-
-        self.csv_header_written = False  # CSV 헤더를 1번만 쓰기 위한 플래그
+        base_name = os.path.splitext(os.path.basename(self.video_path))[0]
+        now_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.output_csv = f"./logs/{base_name}_{now_str}_illegal_parking.csv"
+        self.csv_header_written = os.path.exists(self.output_csv)
 
         if os.path.exists(self.output_csv):
             os.remove(self.output_csv)
@@ -188,7 +203,6 @@ class VideoWindow(QWidget):
         # ⏯ 영상 첫 프레임 미리 표시
         self.show_first_frame()
 
-        # self.showMaximized()
         self.installEventFilter(self)
 
         # 선 통과 여부 저장용 딕셔너리 추가
@@ -278,11 +292,179 @@ class VideoWindow(QWidget):
 
         self.force_draw_objects = False  # 👉 객체 박스 강제 그리기 용도
 
+    def change_file(self, index):
+
+        # 👉 현재 상태 저장
+        self.per_file_states[self.video_path] = {
+            "frame_idx": self.frame_idx,
+            "lines": copy.deepcopy(self.lines),
+            "stop_polygons": copy.deepcopy(self.stop_polygons),
+            "line_counts": copy.deepcopy(self.line_counts),
+            "crossed_lines": copy.deepcopy(self.crossed_lines),
+            "stop_watch": copy.deepcopy(self.stop_watch),
+            "illegal_log": copy.deepcopy(self.illegal_log),
+            "prev_positions": copy.deepcopy(self.prev_positions),
+            "line_number": self.line_number,
+            "area_number": self.area_number,
+        }
+
+        self.current_index = index
+        self.video_path, self.label_path = self.video_label_pairs[index]
+
+        # 영상 재로딩
+        self.cap.release()
+        self.cap = cv2.VideoCapture(self.video_path)
+        self.frame_data = read_raw_data(self.label_path)
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.frame_slider.setMaximum(self.total_frames)
+        # 👉 새 영상 상태 복원 or 초기화
+        state = self.per_file_states.get(self.video_path, None)
+
+        # ✅ 여기 바로 아래에 추가!
+        base_name = os.path.splitext(os.path.basename(self.video_path))[0]
+        now_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.output_csv = f"./logs/{base_name}_{now_str}_illegal_parking.csv"
+        self.csv_header_written = os.path.exists(self.output_csv)
+
+        if state:
+            self.frame_idx = state["frame_idx"]
+            self.lines = state["lines"]
+            self.stop_polygons = state["stop_polygons"]
+            self.line_counts = state["line_counts"]
+
+            self.crossed_lines = state["crossed_lines"]
+            self.stop_watch = state["stop_watch"]
+            self.illegal_log = state["illegal_log"]
+            self.prev_positions = state["prev_positions"]
+            self.line_number = state["line_number"]
+            self.area_number = state["area_number"]
+        else:
+            self.frame_idx = 1
+            self.lines = []
+            self.stop_polygons = []
+            self.line_counts = {}
+            self.crossed_lines = set()
+            self.stop_watch = {}
+            self.illegal_log = set()
+            self.prev_positions = {}
+            self.line_number = 1
+            self.area_number = 1
+
+        # 👉 우측 라벨 및 위젯 초기화
+        for widget in self.line_widgets.values():
+            self.right_layout.removeWidget(widget)
+            widget.deleteLater()
+        self.line_widgets.clear()
+        self.line_labels.clear()
+
+        for widget in self.area_widgets.values():
+            self.right_layout.removeWidget(widget)
+            widget.deleteLater()
+        self.area_widgets.clear()
+        self.area_labels.clear()
+
+        # 👉 선 다시 추가
+        for p1, p2, line_id, desc in self.lines:
+            label = QLabel(f"선 {line_id} ({desc}): Count: {self.line_counts.get(line_id, 0)}")
+            label.setStyleSheet("color: red; font-size: 16px; font-weight: bold;")
+            edit_btn = QPushButton("수정")
+            delete_btn = QPushButton("삭제")
+            edit_btn.setFixedSize(60, 30)
+            delete_btn.setFixedSize(60, 30)
+            edit_btn.clicked.connect(lambda _, lid=line_id: self.edit_line_description(lid))
+            delete_btn.clicked.connect(lambda _, lid=line_id: self.delete_line(lid))
+
+            widget = QWidget()
+            layout = QHBoxLayout()
+            layout.addWidget(label)
+            layout.addWidget(edit_btn)
+            layout.addWidget(delete_btn)
+            layout.setContentsMargins(0, 0, 0, 0)
+            widget.setLayout(layout)
+
+            self.right_layout.addWidget(widget)
+            self.line_labels[line_id] = label
+            self.line_widgets[line_id] = widget
+
+        # 👉 영역 다시 추가
+        for idx, (polygon, desc) in enumerate(self.stop_polygons):
+            area_id = idx + 1
+            label = QLabel(f"영역 {area_id} ({desc})")
+            label.setStyleSheet("color: green; font-size: 16px; font-weight: bold;")
+            edit_btn = QPushButton("수정")
+            delete_btn = QPushButton("삭제")
+            edit_btn.setFixedSize(60, 30)
+            delete_btn.setFixedSize(60, 30)
+            edit_btn.clicked.connect(lambda _, aid=area_id: self.edit_area_description(aid))
+            delete_btn.clicked.connect(lambda _, aid=area_id: self.delete_area(aid))
+
+            widget = QWidget()
+            layout = QHBoxLayout()
+            layout.addWidget(label)
+            layout.addWidget(edit_btn)
+            layout.addWidget(delete_btn)
+            layout.setContentsMargins(0, 0, 0, 0)
+            widget.setLayout(layout)
+
+            self.right_layout.addWidget(widget)
+            self.area_labels[area_id] = label
+            self.area_widgets[area_id] = widget
+
+        # self.frame_idx = 1
+        self.drawing_enabled = True
+        self.cross_log.clear()
+        self.prev_positions.clear()
+        self.line_counts.clear()
+        self.crossed_lines.clear()
+        self.stop_watch.clear()
+        self.illegal_log.clear()
+
+        # self.lines.clear()
+        # self.stop_polygons.clear()
+        self.line_number = 1
+        self.area_number = 1
+
+        self.update_display_with_lines()
+        # self.show_first_frame()
+        self.frame_slider.setValue(self.frame_idx)
+        self.frame_label.setText(f"프레임: {self.frame_idx}")
+
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_idx - 1)
+        ret, frame = self.cap.read()
+
+        if ret:
+            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.update_display_with_lines()
+            self.frame_label.setText(f"프레임: {self.frame_idx}")
+            self.frame_slider.setValue(self.frame_idx)
+
+        # ✅ 여기에 이 2줄 추가
+        self.drawing_enabled = False
+        self.is_paused = True
+
     def get_line_description(self, line_id):
         for p1, p2, num, desc in self.lines:
             if num == line_id:
                 return desc
         return ""
+    
+    def safe_seek(self, target_frame):
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        for i in range(target_frame - 1):
+            ret, _ = self.cap.read()
+            if not ret:
+                print(f"[ERROR] Frame {i+1} read failed during seek")
+
+        ret, frame = self.cap.read()
+        if not ret:
+            print(f"[ERROR] Frame {target_frame} read failed at target")
+            return None
+
+        if frame is None:
+            print(f"[ERROR] Frame {target_frame} is None")
+            return None
+
+        return frame.copy()  # ✅ 반드시 frame 반환해야 정상 동작
     
     def jump_to_frame(self):
         text = self.search_frame_input.text().strip()
@@ -295,9 +477,8 @@ class VideoWindow(QWidget):
             QMessageBox.warning(self, "범위 오류", f"1 ~ {self.total_frames} 사이의 값을 입력해주세요.")
             return
 
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number - 1)
-        ret, frame = self.cap.read()
-        if ret:
+        frame = self.safe_seek(frame_number)
+        if frame is not None:
             self.frame_idx = frame_number
             self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             self.frame_label.setText(f"프레임: {self.frame_idx}")
@@ -342,10 +523,12 @@ class VideoWindow(QWidget):
         # 일시정지 상태 또는 선/영역 그리기 중일 경우 프레임 처리 중단
         if (self.is_paused or self.drawing_enabled) and not self.force_draw_objects:
             return 
+        
         # 다음 프레임 읽기
         ret, frame = self.cap.read()
+
         if not ret:
-            print("영상 끝에 도달했습니다.")
+            # 영상 끝에 도달한 경우
             self.timer.stop()
             # self.cap.release()
             return
@@ -353,12 +536,8 @@ class VideoWindow(QWidget):
         # BGR → RGB 변환
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # # ✅ 모든 프레임에 대해 ROI 영역을 반투명으로 채우기
-        # if hasattr(self, 'stop_polygons'):
-        #     for polygon in self.stop_polygons:
-        #         if len(polygon) == 4:
-        #             draw_transparent_polygon(frame_rgb, polygon, color=(0, 128, 0), alpha=0.25)
-
+        self.frame = frame_rgb  # 💥 반드시 먼저 설정
+       
         if self.frame_idx in self.frame_data:
             # 현재 프레임의 객체 정보 처리
             for obj_id, x1, y1, x2, y2, label in self.frame_data[self.frame_idx]:
@@ -492,11 +671,16 @@ class VideoWindow(QWidget):
                 count = self.line_counts.get(line_id, 0)
                 label.setText(f"선 {line_id} ({self.get_line_description(line_id)}): Count: {count}")
 
-            self.update_display_with_lines()
-            self.frame_label.setText(f"프레임: {self.frame_idx}")  # ✅ 현재 프레임 표시
-            self.frame_slider.setValue(self.frame_idx)
-            if not self.force_draw_objects:
-                self.frame_idx += 1
+        if not self.is_paused:
+            self.frame_idx += 1
+
+        if self.frame_idx > self.total_frames:
+            self.timer.stop()
+            return
+
+        self.update_display_with_lines()
+        self.frame_label.setText(f"프레임: {self.frame_idx}")  # ✅ 현재 프레임 표시
+        self.frame_slider.setValue(self.frame_idx)
 
     def set_line_mode(self):
         self.draw_mode = 'line'
@@ -511,6 +695,7 @@ class VideoWindow(QWidget):
         self.temp_points.clear()
                            
     def update_display_with_lines(self):
+        # print(f"[DRAW] Displaying frame {self.frame_idx}")
         h, w, ch = self.frame.shape
         bytes_per_line = ch * w
         qimg = QImage(self.frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
@@ -528,6 +713,8 @@ class VideoWindow(QWidget):
         font.setPointSize(15)
         font.setBold(True)
         painter.setFont(font)
+
+        painter.drawText(20, 40, f"Frame: {self.frame_idx}")
 
         # 선, 번호 그리기
         for p1, p2, num, desc in self.lines:
@@ -635,9 +822,8 @@ class VideoWindow(QWidget):
                     # 👉 라벨에 단어 줄바꿈 설정
                     label.setWordWrap(True)
 
-                    # self.undo_stack.append(("line", line_obj))  # 🔥 추가!
                     self.line_number += 1
-                    # self.redo_stack.clear()
+    
                 else:
                     print("설명이 입력되지 않아 선이 생성되지 않습니다.")
                     self.temp_points.clear()
@@ -750,6 +936,7 @@ class VideoWindow(QWidget):
             if self.drawing_enabled:
                 print("Enter 키 눌림: 영상 재생 시작")
                 self.drawing_enabled = False
+                self.is_paused = False
                 self.timer.start(30)
             else: # ⏯ 재생 중일 때 Enter로 일시정지 / 재개
                 self.is_paused = not self.is_paused
@@ -802,52 +989,46 @@ class VideoWindow(QWidget):
             self.timer.stop()
 
 
-        elif event.key() == Qt.Key_A:  # 이전 프레임
+        elif event.key() == Qt.Key_A:
             if self.frame_idx <= 1:
                 print("첫 프레임입니다.")
                 return
-            if self.frame_idx > 1:
-                self.frame_idx -= 1
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_idx - 1)
-                ret, frame = self.cap.read()
-                if ret:
-                    self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    self.frame_label.setText(f"프레임: {self.frame_idx}")
-                    self.frame_slider.setValue(self.frame_idx)
-
-                    self.force_draw_objects = True
-                    self.update_frame()
-                    self.force_draw_objects = False
+            self.frame_idx -= 1
+            frame = self.safe_seek(self.frame_idx)
+            if frame is not None:
+                self.frame = frame 
+                self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self.frame_label.setText(f"프레임: {self.frame_idx}")
+                self.frame_slider.setValue(self.frame_idx)
+                self.force_draw_objects = True
+                self.update_frame()
+                self.force_draw_objects = False
                     
-
         elif event.key() == Qt.Key_D:
             if self.frame_idx >= self.total_frames:
                 print("마지막 프레임입니다.")
                 return
             self.frame_idx += 1
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_idx - 1)
-            ret, frame = self.cap.read()
-            if ret:
+            frame = self.safe_seek(self.frame_idx)
+            if frame is not None:
                 self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 self.frame_label.setText(f"프레임: {self.frame_idx}")
                 self.frame_slider.setValue(self.frame_idx)
-
                 self.force_draw_objects = True
                 self.update_frame()
                 self.force_draw_objects = False
                 
-  
     def handle_slider_moved(self):
         value = self.frame_slider.value()
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, value - 1)
-
-        self.frame_idx = value
-        self.frame_label.setText(f"프레임: {self.frame_idx}")
-        self.frame_slider.setValue(self.frame_idx)
-
-        self.force_draw_objects = True
-        self.update_frame()
-        self.force_draw_objects = False
+        frame = self.safe_seek(value)
+        if frame is not None:
+            self.frame_idx = value
+            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.frame_label.setText(f"프레임: {self.frame_idx}")
+            self.frame_slider.setValue(self.frame_idx)
+            self.force_draw_objects = True
+            self.update_frame()
+            self.force_draw_objects = False
 
     def closeEvent(self, event):
         self.cap.release()
@@ -865,28 +1046,40 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
 
     # ✅ 영상 파일 선택
-    video_path, _ = QFileDialog.getOpenFileName(
+    video_paths, _ = QFileDialog.getOpenFileNames(
         None,
-        "영상 파일 선택",
+        "여러 영상 파일 선택",
         "./assets",
         "Video Files (*.mp4 *.avi *.mov);;All Files (*)"
     )
-    if not video_path:
+    if not video_paths:
         QMessageBox.warning(None, "경고", "영상 파일을 선택하지 않으면 프로그램이 종료됩니다.")
         sys.exit()
 
     # ✅ 라벨 파일 선택
-    label_path, _ = QFileDialog.getOpenFileName(
+    label_paths, _ = QFileDialog.getOpenFileNames(
         None,
-        "라벨 텍스트 파일 선택",
+        "여러 텍스트 파일 선택",
         "./assets",
         "Text Files (*.txt);;All Files (*)"
     )
-    if not label_path:
+    if not label_paths:
         QMessageBox.warning(None, "경고", "라벨 파일을 선택하지 않으면 프로그램이 종료됩니다.")
         sys.exit()
 
+    video_label_pairs = []
+    for v_path in video_paths:
+        base = os.path.splitext(os.path.basename(v_path))[0]
+        for l_path in label_paths:
+            if base in l_path:  # 이름 매칭
+                video_label_pairs.append((v_path, l_path))
+                break
+
+    if not video_label_pairs:
+        QMessageBox.warning(None, "경고", "매칭되는 영상-라벨 쌍이 없습니다.")
+        sys.exit()
+
     # ✅ 창 열기
-    window = VideoWindow(video_path, label_path)
+    window = VideoWindow(video_label_pairs)
     window.show()
     sys.exit(app.exec_())
