@@ -903,17 +903,15 @@ class VideoWindow(QWidget):
                 area_states = []
                 for aid in current_area_ids:
                     polygon = polygon_dict.get(aid, None)
-                    if polygon and len(polygon) == 4:
-                        inside = point_in_polygon((cx, cy), polygon)
-                        key = (obj_id, aid)
-                        if inside and key not in self.area_cross_once_logged:
-                            area_states.append(1)
-                            self.area_cross_once_logged.add(key)
-                        else:
-                            area_states.append(0)
-                    else:
-                        area_states.append(0)              
 
+                    if polygon and len(polygon) == 4:
+                        pts = np.array([(pt.x(), pt.y()) for pt in polygon], dtype=np.int32)
+                        inside = point_in_polygon((cx, cy), pts)
+                        # print(f"[DEBUG] Frame {self.frame_idx} | ID {obj_id} | Center ({cx},{cy}) → Area {aid} → {inside}")
+                        area_states.append(1 if inside else 0)
+                    else:
+                        area_states.append(0)
+        
                 # # ✅ 헤더 작성 전 항상 max 값 갱신
                 # self.max_line_number = max(self.max_line_number, len(self.lines))
                 # self.max_area_number = max(self.max_area_number, len(self.stop_polygons))
