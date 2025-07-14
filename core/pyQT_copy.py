@@ -1,12 +1,3 @@
-# 📁 pyQT.py
-# PyQt5 기반 GUI 영상 분석 도구
-# - 선 통과 카운트 기능 (교차선 감지)
-# - 정지 감지 기반 불법주정차 판별 기능 (ROI 체류 시간)
-# - CSV 로그 저장 및 영상 상 시각화
-
-# 작성자: (허종우)
-# 최종 수정일: 2025-07-08
-
 import sys, cv2, os, copy
 import numpy as np
 from PyQt5.QtWidgets import (
@@ -88,13 +79,6 @@ def crossed_line(p1, p2, prev_pt, curr_pt):
     
     return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
 
-# def draw_transparent_polygon(frame, polygon, color=(0, 255, 0), alpha=0.2):
-#     overlay = frame.copy()
-#     pts = np.array([[pt.x(), pt.y()] for pt in polygon], np.int32)
-#     pts = pts.reshape((-1, 1, 2))
-#     cv2.fillPoly(overlay, [pts], color)
-#     cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-
 def draw_qt_transparent_polygon(painter, polygon, color=Qt.green, alpha=80):
     color_with_alpha = QColor(color)
     color_with_alpha.setAlpha(alpha)
@@ -149,14 +133,14 @@ class VideoWindow(QWidget):
 
         self.right_panel.setLayout(self.right_layout)
 
-        # GUI 상단에 QComboBox 추가
-        self.file_selector = QComboBox()
-        for v, l in self.video_label_pairs:
-            name = os.path.basename(v)
-            self.file_selector.addItem(name)
+        # # GUI 상단에 QComboBox 추가
+        # self.file_selector = QComboBox()
+        # for v, l in self.video_label_pairs:
+        #     name = os.path.basename(v)
+        #     self.file_selector.addItem(name)
 
-        self.file_selector.currentIndexChanged.connect(self.change_file)
-        self.right_layout.addWidget(self.file_selector)
+        # self.file_selector.currentIndexChanged.connect(self.change_file)
+        # self.right_layout.addWidget(self.file_selector)
 
         # ⬇ 현재 영상 제목을 표시할 QLabel 추가
         self.video_name_label = QLabel(f"🎬 현재 영상: {os.path.basename(self.video_path)}")
@@ -167,8 +151,6 @@ class VideoWindow(QWidget):
 
 
         self.label_path = label_path
-        # self.label_path = './assets/2024-10-21 08_56_19.337.txt' # 라벨 경로 수정
-        # self.label_path = './assets/2024-10-21 13_13_50.136.txt'  # 라벨 경로 수정
         self.cumulative_frame_offset = 0  # 누적 프레임 오프셋
         self.frame_data = read_raw_data(self.label_path)
         self.frame_idx = 1  # 프레임 번호 추적
@@ -206,23 +188,18 @@ class VideoWindow(QWidget):
 
         # 불법주정차 결과 저장용 csv 초기화
         video_date_str = os.path.basename(self.video_path).split()[0]  # "2024-10-21"
-        
-        self.output_csv = f"./logs/{video_date_str}_analyzed.csv"
-        if os.path.exists(self.output_csv):
-            os.remove(self.output_csv)  # 기존 파일 삭제 (처음만 실행)
+        today_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.output_csv = f"./logs/{video_date_str}_analyzed_{today_str}.csv"
         self.csv_header_written = False
 
-        # 예: 2024-07-11_analyzed.csv, v2, v3 ...
-        # video_date_str = os.path.basename(self.video_path).split()[0]  # "2024-10-21"
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        base_name = f"{video_date_str}_analyzed"
+        base_name = f"{video_date_str}_analyzed_{today_str}"
         csv_dir = "./logs"
 
         # 파일명 중복 방지: v2, v3, ...
         version = 1
         while True:
             if version == 1:
-                csv_path = os.path.join(csv_dir, f"{base_name}.csv")
+                csv_path = os.path.join(csv_dir, f"{base_name}_v{version}.csv")
             else:
                 csv_path = os.path.join(csv_dir, f"{base_name}_v{version}.csv")
             if not os.path.exists(csv_path):
@@ -240,6 +217,8 @@ class VideoWindow(QWidget):
 
         # 선 통과 여부 저장용 딕셔너리 추가
         self.cross_log = set()  # (obj_id, line_id) → 통과 여부
+        self.line_cross_once_logged = set()  # 👉 (obj_id, line_id) → 최초 기록 여부 추적
+        self.area_cross_once_logged = set()  # 👉 (obj_id, area_id)
 
         self.line_labels = {} # line_id → QLabel 매핑
 
@@ -286,19 +265,6 @@ class VideoWindow(QWidget):
 
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        
-
-        # shortcut_label = QLabel("🔑 단축키 안내:\n"
-        #                 "Enter: 영상 재생/일시정지\n"
-        #                 "A: 이전 프레임\n"
-        #                 "D: 다음 프레임\n"
-        #                 "R: 초기화 (리셋)\n"
-        #                 "Q: 종료")
-
-        # shortcut_label.setMinimumHeight(120)  # 🔥 이게 핵심!
-        # shortcut_label.setStyleSheet("color: black; font-size: 24px; line-height: 160%;")
-        # self.right_layout.addWidget(shortcut_label)
-
         # ⏯ 영상 재생 / 일시정지 버튼
         self.play_pause_button = QPushButton("⏯ 재생 / 일시정지")
         self.play_pause_button.clicked.connect(self.toggle_play_pause)
@@ -319,6 +285,22 @@ class VideoWindow(QWidget):
         frame_nav_layout.addWidget(self.prev_frame_button)
         frame_nav_layout.addWidget(self.next_frame_button)
         self.right_layout.addLayout(frame_nav_layout)
+
+        # 📂 이전 / 다음 영상 버튼
+        self.prev_video_button = QPushButton("📂 이전 영상")
+        self.next_video_button = QPushButton("📂 다음 영상")
+        self.prev_video_button.setFixedHeight(40)
+        self.next_video_button.setFixedHeight(40)
+
+        # 버튼 클릭 연결
+        self.prev_video_button.clicked.connect(self.go_prev_video)
+        self.next_video_button.clicked.connect(self.go_next_video)
+
+        # 한 줄로 정렬
+        video_nav_layout = QHBoxLayout()
+        video_nav_layout.addWidget(self.prev_video_button)
+        video_nav_layout.addWidget(self.next_video_button)
+        self.right_layout.addLayout(video_nav_layout)
 
 
         # 🔁 초기화 버튼
@@ -369,6 +351,20 @@ class VideoWindow(QWidget):
         # ✅ 누적 최대값 (영상 전체 기준)
         self.global_max_line_number = 0
         self.global_max_area_number = 0
+
+    def go_prev_video(self):
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.change_file(self.current_index)
+        else:
+            QMessageBox.information(self, "알림", "첫 번째 영상입니다.")
+
+    def go_next_video(self):
+        if self.current_index + 1 < len(self.video_label_pairs):
+            self.current_index += 1
+            self.change_file(self.current_index)
+        else:
+            QMessageBox.information(self, "알림", "마지막 영상입니다.")
 
 
     def toggle_play_pause(self):
@@ -423,6 +419,9 @@ class VideoWindow(QWidget):
         self.area_mode_button.setChecked(False)
         self.cross_log.clear()
         self.area_number = 1
+        # reset -> 기록 상태도 함께 초기화할 경우 아래 두 줄 주석 제거
+        # self.line_cross_once_logged.clear() 
+        # self.area_cross_once_logged.clear()
 
         # 위젯 정리
         for widget in self.line_widgets.values():
@@ -451,32 +450,34 @@ class VideoWindow(QWidget):
         self.timer.stop()
         
     def change_file(self, index):
-        print(f"📦 현재 영상: {self.video_path}")
-        print(f"📄 매칭된 라벨: {self.label_path}")
-        print(f"📊 라벨 데이터 프레임 수: {len(self.frame_data)}")  # 이게 0이면 라벨 없음
+        # print(f"📦 현재 영상: {self.video_path}")
+        # print(f"📄 매칭된 라벨: {self.label_path}")
+        # print(f"📊 라벨 데이터 프레임 수: {len(self.frame_data)}")  # 이게 0이면 라벨 없음
 
         # 👉 현재 상태 저장
-        self.per_file_states[self.video_path] = {
-            "frame_idx": self.frame_idx,
-            "lines": copy.deepcopy(self.lines),
-            "stop_polygons": copy.deepcopy(self.stop_polygons),
-            "line_counts": copy.deepcopy(self.line_counts),
-            "crossed_lines": copy.deepcopy(self.crossed_lines),
-            "stop_watch": copy.deepcopy(self.stop_watch),
-            "illegal_log": copy.deepcopy(self.illegal_log),
-            "prev_positions": copy.deepcopy(self.prev_positions),
-            "line_number": self.line_number,
-            "area_number": self.area_number,
-        }
+        if 0 <= self.current_index < len(self.video_label_pairs):
+            self.per_file_states[self.video_path] = {
+                "frame_idx": self.frame_idx,
+                "lines": copy.deepcopy(self.lines),
+                "stop_polygons": copy.deepcopy(self.stop_polygons),
+                "line_counts": copy.deepcopy(self.line_counts),
+                "crossed_lines": copy.deepcopy(self.crossed_lines),
+                "stop_watch": copy.deepcopy(self.stop_watch),
+                "illegal_log": copy.deepcopy(self.illegal_log),
+                "prev_positions": copy.deepcopy(self.prev_positions),
+                "line_number": self.line_number,
+                "area_number": self.area_number,
+            }
 
-        # 👉 현재 영상/장소 그룹 상태 저장
-        group_key = get_location_folder_key(self.video_path)
-        self.group_states[group_key] = {
-            "lines": copy.deepcopy(self.lines),
-            "stop_polygons": copy.deepcopy(self.stop_polygons),
-            "line_number": self.line_number,
-            "area_number": self.area_number,
-}
+            # 👉 현재 영상/장소 그룹 상태 저장
+            group_key = get_location_folder_key(self.video_path)
+            self.group_states[group_key] = {
+                "lines": copy.deepcopy(self.lines),
+                "stop_polygons": copy.deepcopy(self.stop_polygons),
+                "line_number": self.line_number,
+                "area_number": self.area_number,
+            }
+    
         self.current_index = index
         # 누적 프레임 오프셋 계산 (index 이전 영상들의 총 프레임 수)
         self.cumulative_frame_offset = 0
@@ -502,17 +503,6 @@ class VideoWindow(QWidget):
         self.frame_slider.setMaximum(self.total_frames)
         # 👉 새 영상 상태 복원 or 초기화
         state = self.per_file_states.get(self.video_path, None)
-
-        # # # ✅ 여기 바로 아래에 추가!
-        # base_name = os.path.splitext(os.path.basename(self.video_path))[0]
-        # now_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        # self.output_csv = f"./logs/{base_name}_{now_str}_illegal_parking.csv"
-
-        # self.csv_header_written = os.path.exists(self.output_csv)
-        # ✅ 두 번째 영상부터도 헤더 다시 작성할 수 있도록 초기화
-        # if os.path.exists(self.output_csv):
-        #     os.remove(self.output_csv)
-        # self.csv_header_written = False
 
         if state:
             self.frame_idx = state["frame_idx"]
@@ -560,8 +550,10 @@ class VideoWindow(QWidget):
         self.area_widgets.clear()
         self.area_labels.clear()
 
+        # ✅ line_id 기준 정렬
+        sorted_lines = sorted(self.lines, key=lambda x: x[2])  # x[2] = line_id
         # 👉 선 다시 추가
-        for p1, p2, line_id, desc in self.lines:
+        for p1, p2, line_id, desc in sorted_lines:
             label = QLabel(f"선 {line_id} ({desc}): Count: {self.line_counts.get(line_id, 0)}")
             label.setStyleSheet("color: red; font-size: 16px; font-weight: bold;")
             label.setWordWrap(True)        # ✅ 줄바꿈 허용
@@ -584,8 +576,10 @@ class VideoWindow(QWidget):
             self.line_labels[line_id] = label
             self.line_widgets[line_id] = widget
 
-        # 👉 영역 다시 추가
-        for idx, (polygon, desc) in enumerate(self.stop_polygons):
+        # ✅ 영역 번호 기준으로 정렬
+        sorted_areas = sorted(enumerate(self.stop_polygons), key=lambda x: x[0] + 1)
+
+        for idx, (polygon, desc) in sorted_areas:
             area_id = idx + 1
             label = QLabel(f"영역 {area_id} ({desc})")
             label.setStyleSheet("color: green; font-size: 16px; font-weight: bold;")
@@ -618,10 +612,6 @@ class VideoWindow(QWidget):
         self.stop_watch.clear()
         self.illegal_log.clear()
 
-        # self.lines.clear()
-        # self.stop_polygons.clear()
-        # self.line_number = 1
-        # self.area_number = 1
         # ✅ 현재 선/영역 리스트에서 최대 ID를 기준으로 line_number, area_number 재설정
         existing_line_ids = [line[2] for line in self.lines]  # line = (p1, p2, line_id, desc)
         self.line_number = max(existing_line_ids, default=0) + 1
@@ -811,13 +801,7 @@ class VideoWindow(QWidget):
                                 self.cross_log.add((obj_id, num))
 
                 # 현재 위치 저장
-                self.prev_positions[obj_id] = curr_point
-
-            # if hasattr(self, 'stop_polygons'):
-            #     # 각 ROI를 반투명으로 채움
-            #     for polygon in self.stop_polygons:
-            #         if len(polygon) == 4:
-            #             draw_transparent_polygon(frame_rgb, polygon, color=(0, 128, 0), alpha=0.25)                
+                self.prev_positions[obj_id] = curr_point           
 
                 # 정지 감지 및 불법주정차 판단:
                 for polygon in self.stop_polygons:
@@ -869,49 +853,68 @@ class VideoWindow(QWidget):
                 base_info = [self.frame_idx, obj_id, x1, y1, x2, y2, label] # LABEL_NAMES.get(label, label): 라벨명 그대로 출력
 
                 # 선 통과 여부
+                # 🎯 A에서 정의한 ID 리스트를 여기도 복붙하거나 다시 정의해도 OK
+                current_line_ids = sorted(set(line[2] for line in self.lines))
+                
+
+                current_line_ids = sorted(set(line[2] for line in self.lines))  # 살아있는 선만
                 line_states = []
-                for i in range(1, self.line_number):  # 선 번호는 1부터 시작
-                    state = 1 if (obj_id, i) in self.cross_log else 0
-                    line_states.append(state)
+                for lid in current_line_ids:
+                    key = (obj_id, lid)
+                    if key in self.cross_log and key not in self.line_cross_once_logged:
+                        line_states.append(1)
+                        self.line_cross_once_logged.add(key)
+                    else:
+                        line_states.append(0)
 
                 # 중심 좌표
                 cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
 
                 # 영역 포함 여부
+                current_area_ids = list(range(1, len(self.stop_polygons) + 1))
+                # 현재 영역 수 기준으로 실제 영역 polygon 매핑
+                polygon_dict = {j + 1: polygon for j, (polygon, _) in enumerate(self.stop_polygons)}
+
                 area_states = []
-                for polygon in self.stop_polygons:
-                    if len(polygon) == 4:
+                for aid in current_area_ids:
+                    polygon = polygon_dict.get(aid, None)
+                    if polygon and len(polygon) == 4:
                         inside = point_in_polygon((cx, cy), polygon)
-                        area_states.append(1 if inside else 0)
+                        key = (obj_id, aid)
+                        if inside and key not in self.area_cross_once_logged:
+                            area_states.append(1)
+                            self.area_cross_once_logged.add(key)
+                        else:
+                            area_states.append(0)
                     else:
-                        area_states.append(0)
+                        area_states.append(0)              
 
-                # ⏬ CSV 헤더는 1번만 작성
-                # if not self.csv_header_written:
-                #     with open(self.output_csv, "w") as f:
-                #         base = "video,frame,obj_id,x1,y1,x2,y2,label"
-                #         for i in range(1, self.line_number):
-                #             base += f",line_{i}"
-                #         for j in range(1, len(self.stop_polygons) + 1):
-                #             base += f",area_{j}"
-                #         f.write(base + "\n")
-                #     self.csv_header_written = True
+                # # ✅ 헤더 작성 전 항상 max 값 갱신
+                # self.max_line_number = max(self.max_line_number, len(self.lines))
+                # self.max_area_number = max(self.max_area_number, len(self.stop_polygons))
 
-                # ✅ 헤더 작성 전 항상 max 값 갱신
-                self.max_line_number = max(self.max_line_number, len(self.lines))
-                self.max_area_number = max(self.max_area_number, len(self.stop_polygons))
+                # # 🔁 누적 최대값도 갱신 (매 프레임 체크)
+                # self.global_max_line_number = max(self.global_max_line_number, self.max_line_number)
+                # self.global_max_area_number = max(self.global_max_area_number, self.max_area_number)
 
-                # 🔁 누적 최대값도 갱신 (매 프레임 체크)
-                self.global_max_line_number = max(self.global_max_line_number, self.max_line_number)
-                self.global_max_area_number = max(self.global_max_area_number, self.max_area_number)
+                # line_id 리스트 직접 가져오기
+                line_ids = sorted(set(line[2] for line in self.lines))
+                area_ids = list(range(1, len(self.stop_polygons) + 1))
 
+                # CSV 헤더 작성 (파일 맨 처음 한 번만 실행)
                 if not self.csv_header_written:
                     with open(self.output_csv, "w") as f:
                         base = "video,frame,obj_id,x1,y1,x2,y2,label"
-                        for i in range(1, self.global_max_line_number + 1):
-                            base += f",line_{i}"
-                        for j in range(1, self.global_max_area_number + 1):
-                            base += f",area_{j}"
+
+                        # ✅ 현재 살아있는 선 ID / 영역 ID 기준으로만 컬럼 생성
+                        current_line_ids = sorted(set(line[2] for line in self.lines))
+                        current_area_ids = list(range(1, len(self.stop_polygons) + 1))
+
+                        for lid in current_line_ids:
+                            base += f",line_{lid}"
+                        for aid in current_area_ids:
+                            base += f",area_{aid}"
+
                         f.write(base + "\n")
                     self.csv_header_written = True
 
@@ -1046,8 +1049,12 @@ class VideoWindow(QWidget):
 
             # 선 모드일 경우: 점 2개 찍으면 하나의 선 생성
             if self.draw_mode == 'line' and len(self.temp_points) == 2:
-                existing_ids = [line[2] for line in self.lines]
-                new_id = max(existing_ids, default=0) + 1
+                existing_ids = sorted([line[2] for line in self.lines])
+                new_id = 1
+                for i in range(1, len(existing_ids) + 2):  # ex) [1,2,3]이면 4까지 검사
+                    if i not in existing_ids:
+                        new_id = i
+                        break
 
                 text, ok = QInputDialog.getText(self, f"선 {new_id} 설명 입력", "이 선에 대한 설명을 입력하세요:")
 
@@ -1114,8 +1121,17 @@ class VideoWindow(QWidget):
                     area_obj = (polygon, description)
                     self.stop_polygons.append(area_obj)
 
-                    area_id = len(self.stop_polygons)
-                    label = QLabel(f"영역 {area_id} ({description})")
+                    # 🔁 기존 영역 ID들에서 가장 작은 빈 번호 찾기
+                    existing_area_ids = sorted(self.area_labels.keys())
+                    new_area_id = 1
+                    for i in range(1, len(existing_area_ids) + 2):
+                        if i not in existing_area_ids:
+                            new_area_id = i
+                            break
+
+                    label = QLabel(f"영역 {new_area_id} ({description})")
+
+
                     label.setStyleSheet("color: green; font-size: 16px; font-weight: bold;")
                     label.setWordWrap(True) 
 
@@ -1125,8 +1141,8 @@ class VideoWindow(QWidget):
                     delete_btn.setFixedSize(60, 30)
 
                     # 기능 연결
-                    edit_btn.clicked.connect(lambda _, aid=area_id: self.edit_area_description(aid))
-                    delete_btn.clicked.connect(lambda _, aid=area_id: self.delete_area(aid))
+                    edit_btn.clicked.connect(lambda _, aid=new_area_id: self.edit_area_description(aid))
+                    delete_btn.clicked.connect(lambda _, aid=new_area_id: self.delete_area(aid))
 
                     area_widget = QWidget()
                     layout = QHBoxLayout()
@@ -1137,16 +1153,13 @@ class VideoWindow(QWidget):
                     area_widget.setLayout(layout)
 
                     self.right_layout.addWidget(area_widget)
-                    self.area_labels[area_id] = label
-                    self.area_widgets[area_id] = area_widget
+                    self.area_labels[new_area_id] = label
+                    self.area_widgets[new_area_id] = area_widget
 
-                    # self.stop_polygons.append(area_obj)
                     self.max_area_number = max(self.max_area_number, len(self.stop_polygons))
                     # ✅ 누적 최대값 갱신
                     self.global_max_area_number = max(self.global_max_area_number, self.max_area_number)
-                    # self.area_number += 1
-
-                    # self.undo_stack.append(("area", area_obj))  # 🔥 추가!
+                    
                     print(f"🚧 정지 감지 영역 {len(self.stop_polygons)} 생성 완료")
                 else:
                     print("설명이 입력되지 않아 영역이 생성되지 않습니다.")
@@ -1177,6 +1190,16 @@ class VideoWindow(QWidget):
             self.right_layout.removeWidget(self.line_widgets[line_id])
             self.line_widgets[line_id].deleteLater()
             del self.line_widgets[line_id]
+        
+        self.line_cross_once_logged = {k for k in self.line_cross_once_logged if k[1] != line_id}
+        self.cross_log = {k for k in self.cross_log if k[1] != line_id}
+        self.crossed_lines = {k for k in self.crossed_lines if k[1] != line_id}
+
+        # 선 삭제 후 최대값 재계산
+        existing_ids = [line[2] for line in self.lines]
+        self.max_line_number = len(existing_ids)
+        self.global_max_line_number = max(existing_ids, default=0)
+
         self.update_display_with_lines()
 
     def edit_area_description(self, area_id):
@@ -1202,98 +1225,13 @@ class VideoWindow(QWidget):
             self.area_widgets[area_id].deleteLater()
             del self.area_widgets[area_id]
 
+        self.area_cross_once_logged = {k for k in self.area_cross_once_logged if k[1] != area_id}
+        # 영역 삭제 후 최대값 재계산
+        self.max_area_number = len(self.stop_polygons)
+        self.global_max_area_number = max(range(1, len(self.stop_polygons) + 1), default=0)
+
         self.update_display_with_lines()
-
-    # def keyPressEvent(self, event: QKeyEvent):
-    #     if event.key() == Qt.Key_Q:
-    #         print("Q 키 눌림: 종료")
-    #         self.close()
-    #     elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
-    #         if self.drawing_enabled:
-    #             print("Enter 키 눌림: 영상 재생 시작")
-    #             self.drawing_enabled = False
-    #             self.is_paused = False
-    #             self.timer.start(30)
-    #         else: # ⏯ 재생 중일 때 Enter로 일시정지 / 재개
-    #             self.is_paused = not self.is_paused
-    #             print("⏸ 일시정지" if self.is_paused else "▶ 재생")
-
-    #     elif event.key() == Qt.Key_R:
-    #         print("🔁 R 키: 상태 초기화")
-
-    #         self.lines.clear()
-    #         self.temp_points.clear()
-    #         self.stop_polygons = [] # 영역 여러개 저장
-    #         self.line_counts.clear()
-    #         self.crossed_lines.clear()
-    #         self.stop_watch.clear()
-    #         self.prev_positions.clear()
-    #         self.line_number = 1
-    #         self.drawing_enabled = True
-    #         self.draw_mode = 'line'
-    #         self.line_mode_button.setChecked(True)
-    #         self.area_mode_button.setChecked(False)
-    #         self.cross_log.clear()  # ⏬ 선 통과 상태 초기화
-
-
-    #         # 👉 선/영역 관련 위젯들 제거
-    #         for widget in self.line_widgets.values():
-    #             self.right_layout.removeWidget(widget)
-    #             widget.deleteLater()
-    #         self.line_widgets.clear()
-
-    #         for widget in self.area_widgets.values():
-    #             self.right_layout.removeWidget(widget)
-    #             widget.deleteLater()
-    #         self.area_widgets.clear()
-
-    #         self.line_labels.clear()
-    #         self.area_labels.clear()
-    #         self.area_number = 1
-
-    #         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    #         self.frame_idx = 1
-    #         self.frame_label.setText("프레임: 1")  # ✅ 프레임 라벨도 초기화
-    #         self.frame_slider.setValue(1)  # ✅ 트랙바도 1로 초기화
-
-    #         self.search_frame_input.clear()
-
-    #         ret, frame = self.cap.read()
-    #         if ret:
-    #             self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    #         self.update_display_with_lines()
-    #         self.timer.stop()
-
-
-    #     elif event.key() == Qt.Key_A:
-    #         if self.frame_idx <= 1:
-    #             print("첫 프레임입니다.")
-    #             return
-    #         self.frame_idx -= 1
-    #         frame = self.safe_seek(self.frame_idx)
-    #         if frame is not None:
-    #             self.frame = frame 
-    #             self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    #             self.frame_label.setText(f"프레임: {self.frame_idx}")
-    #             self.frame_slider.setValue(self.frame_idx)
-    #             self.force_draw_objects = True
-    #             self.update_frame()
-    #             self.force_draw_objects = False
-                    
-    #     elif event.key() == Qt.Key_D:
-    #         if self.frame_idx >= self.total_frames:
-    #             print("마지막 프레임입니다.")
-    #             return
-    #         self.frame_idx += 1
-    #         frame = self.safe_seek(self.frame_idx)
-    #         if frame is not None:
-    #             self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    #             self.frame_label.setText(f"프레임: {self.frame_idx}")
-    #             self.frame_slider.setValue(self.frame_idx)
-    #             self.force_draw_objects = True
-    #             self.update_frame()
-    #             self.force_draw_objects = False
-                
+        
     def handle_slider_moved(self):
         value = self.frame_slider.value()
         frame = self.safe_seek(value)
@@ -1309,14 +1247,6 @@ class VideoWindow(QWidget):
     def closeEvent(self, event):
         self.cap.release()
         event.accept()
-
-# if __name__ == '__main__':
-#     app = QApplication(sys.argv)
-#     video_path = './assets/2024-10-21 08_56_19.337.mp4'  # 영상 경로 수정
-#     # video_path = './assets/2024-10-21 13_13_50.136.mp4'  # 영상 경로 수정
-#     window = VideoWindow(video_path)
-#     window.show()
-#     sys.exit(app.exec_())
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
