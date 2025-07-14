@@ -1,0 +1,8 @@
+# 빌드 무시
+build/
+dist/
+*.exe
+*.pkg
+*.spec
+*.pyc
+__pycache__/

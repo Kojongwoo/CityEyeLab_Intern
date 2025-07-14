@@ -1,12 +1,12 @@
 import sys, cv2, os, copy
 import numpy as np
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel,
+    QApplication, QWidget, QLabel, 
     QHBoxLayout, QVBoxLayout, QPushButton, QInputDialog,
-    QFileDialog, QMessageBox,  QSlider, QLineEdit, QComboBox
+    QFileDialog, QMessageBox,  QSlider, QLineEdit, QScrollArea
 )
 from PyQt5.QtCore import QTimer, Qt, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QKeyEvent, QPainter, QPen, QFont, QBrush, QColor
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QFont, QBrush, QColor
 from datetime import datetime
 from utils import point_in_polygon
 
@@ -123,15 +123,20 @@ class VideoWindow(QWidget):
         video_width = int(window_width * 0.8)
         video_height = int(window_height * 0.95)
         self.video_label.setFixedSize(video_width, video_height)
+
+        # 우측 패널 레이아웃 조정
+        self.right_scroll = QScrollArea()
+        self.right_scroll.setFixedWidth(360)  # 너비 고정 (원하는 값)
+        self.right_scroll.setWidgetResizable(True)
         
-        self.right_panel = QWidget(self)
-        self.right_panel.setFixedWidth(360)  # 너비 고정 (원하는 값)
+        self.right_panel = QWidget()
         self.right_layout = QVBoxLayout()
         self.right_layout.setAlignment(Qt.AlignTop)  # 핵심: 위로 정렬
         self.right_layout.setContentsMargins(0, 0, 0, 0)
         self.right_layout.setSpacing(12)
-
         self.right_panel.setLayout(self.right_layout)
+
+        self.right_scroll.setWidget(self.right_panel)
 
         # # GUI 상단에 QComboBox 추가
         # self.file_selector = QComboBox()
@@ -165,7 +170,8 @@ class VideoWindow(QWidget):
         hbox = QHBoxLayout()
         hbox.setSpacing(20)  # ← 영상과 오른쪽 패널 사이 간격 설정
         hbox.addWidget(self.video_label, stretch = 0)  
-        hbox.addWidget(self.right_panel)  
+        # hbox.addWidget(self.right_panel)  
+        hbox.addWidget(self.right_scroll)  
 
         # 수직 레이아웃: 영상 + 버튼
         vbox = QVBoxLayout()
@@ -209,7 +215,6 @@ class VideoWindow(QWidget):
         self.output_csv = csv_path
         self.csv_header_written = False
 
-
         # ⏯ 영상 첫 프레임 미리 표시
         self.show_first_frame()
 
@@ -238,7 +243,6 @@ class VideoWindow(QWidget):
         self.illegal_log = set()    # 이미 불법정차로 기록된 차량 ID
         self.stop_watch = {}        # 객체별 ROI 체류 시간 추적
 
-
         # 선 모드 / 영역 모드 전환
         self.draw_mode = 'line'  # 또는 'area'
         self.temp_points = []    # 클릭한 점들을 여기에 저장
@@ -254,7 +258,6 @@ class VideoWindow(QWidget):
         self.line_mode_button.setCheckable(True)
         self.area_mode_button.setCheckable(True)
  
-
         self.line_mode_button.setChecked(True)  # 기본은 선 모드
 
         self.line_mode_button.clicked.connect(self.set_line_mode)
@@ -328,17 +331,35 @@ class VideoWindow(QWidget):
 
         # 프레임 검색 입력창 + 버튼
         self.search_frame_input = QLineEdit()
-        self.search_frame_input.setPlaceholderText("프레임 번호 입력")
-        self.search_frame_input.setFixedWidth(120)
+        self.search_frame_input.setPlaceholderText("이동할 프레임 입력")
+        self.search_frame_input.setFixedWidth(240)
+        self.search_frame_input.setFixedHeight(60)
+        font = self.search_frame_input.font()
+        font.setPointSize(18)  # 숫자 폰트 크기 키우기
+        self.search_frame_input.setFont(font)
 
         self.search_frame_button = QPushButton("이동")
+        self.search_frame_button.setFixedHeight(60)
         self.search_frame_button.clicked.connect(self.jump_to_frame)
-
+        
         # 수평으로 묶기
         frame_jump_layout = QHBoxLayout()
         frame_jump_layout.addWidget(self.search_frame_input)
         frame_jump_layout.addWidget(self.search_frame_button)
         self.right_layout.addLayout(frame_jump_layout)
+
+         # ✅ 선/영역 전용 스크롤 박스 추가
+        self.scroll_area_widget = QWidget()
+        self.scroll_layout = QVBoxLayout()
+        self.scroll_layout.setAlignment(Qt.AlignTop)
+        self.scroll_area_widget.setLayout(self.scroll_layout)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFixedHeight(250)  # 원하는 높이만큼 조절 가능
+        self.scroll_area.setWidget(self.scroll_area_widget)
+
+        self.right_layout.addWidget(self.scroll_area)
 
         self.force_draw_objects = False  # 👉 객체 박스 강제 그리기 용도
 
@@ -425,12 +446,14 @@ class VideoWindow(QWidget):
 
         # 위젯 정리
         for widget in self.line_widgets.values():
-            self.right_layout.removeWidget(widget)
+            # self.right_layout.removeWidget(widget)
+            self.scroll_layout.removeWidget(widget)
             widget.deleteLater()
         self.line_widgets.clear()
 
         for widget in self.area_widgets.values():
-            self.right_layout.removeWidget(widget)
+            # self.right_layout.removeWidget(widget)
+            self.scroll_layout.removeWidget(widget)
             widget.deleteLater()
         self.area_widgets.clear()
 
@@ -572,7 +595,8 @@ class VideoWindow(QWidget):
             layout.setContentsMargins(0, 0, 0, 0)
             widget.setLayout(layout)
 
-            self.right_layout.addWidget(widget)
+            # self.right_layout.addWidget(widget)
+            self.scroll_layout.addWidget(widget)  # ✅ 스크롤 영역에 추가
             self.line_labels[line_id] = label
             self.line_widgets[line_id] = widget
 
@@ -599,7 +623,8 @@ class VideoWindow(QWidget):
             layout.setContentsMargins(0, 0, 0, 0)
             widget.setLayout(layout)
 
-            self.right_layout.addWidget(widget)
+            # self.right_layout.addWidget(widget)
+            self.scroll_layout.addWidget(widget)
             self.area_labels[area_id] = label
             self.area_widgets[area_id] = widget
 
@@ -1088,7 +1113,8 @@ class VideoWindow(QWidget):
                     line_layout.setContentsMargins(0, 0, 0, 0)
                     line_widget.setLayout(line_layout)
 
-                    self.right_layout.addWidget(line_widget)
+                    # self.right_layout.addWidget(line_widget)
+                    self.scroll_layout.addWidget(line_widget)
                     self.line_labels[new_id] = label
                     self.line_widgets[new_id] = line_widget
 
@@ -1152,7 +1178,8 @@ class VideoWindow(QWidget):
                     layout.setContentsMargins(0, 0, 0, 0)
                     area_widget.setLayout(layout)
 
-                    self.right_layout.addWidget(area_widget)
+                    # self.right_layout.addWidget(area_widget)
+                    self.scroll_layout.addWidget(area_widget)
                     self.area_labels[new_area_id] = label
                     self.area_widgets[new_area_id] = area_widget
 
