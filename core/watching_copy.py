@@ -11,10 +11,6 @@ from datetime import datetime, timedelta
 from utils import point_in_polygon
 from pyproj import Transformer
 
-# 로그 폴더 없으면 생성
-if not os.path.exists("logs"):
-    os.makedirs("logs")
-
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 LABEL_COLORS = {
@@ -53,8 +49,10 @@ def get_location_folder_key(path):
 
 def read_raw_data(path, frame_offset=0):
     frame_data = {}
+    frame_to_time = {}
+
     min_frame = float('inf')
-    max_frame = 0   
+    max_frame = 0
 
     with open(path, 'r') as f:
         for line in f:
@@ -64,34 +62,22 @@ def read_raw_data(path, frame_offset=0):
             parts = line.split(',')
             if len(parts) >= 8:
                 try:
-                    # datetime은 parts[0]
                     frame, obj_id, x1, y1, x2, y2, label = map(int, parts[1:8])
                 except ValueError:
                     continue
 
+                adjusted_frame = frame - min_frame + 1 + frame_offset
+
+                if adjusted_frame not in frame_data:
+                    frame_data[adjusted_frame] = []
+                    frame_to_time[adjusted_frame] = parts[0]  # 📌 이거만 있으면 됨
+
+                frame_data[adjusted_frame].append((obj_id, x1, y1, x2, y2, label, parts[0]))
+
                 min_frame = min(min_frame, frame)
                 max_frame = max(max_frame, frame)
 
-                if frame not in frame_data:
-                    frame_data[frame] = []
-                frame_data[frame].append((obj_id, x1, y1, x2, y2, label, parts[0]))
-
-    # 프레임 오프셋 적용
-    offset_frame_data = {}
-    for frame, objs in frame_data.items():
-        adjusted_frame = frame - min_frame + 1 + frame_offset
-        offset_frame_data[adjusted_frame] = objs
-
-    return offset_frame_data, 1 + frame_offset, max_frame - min_frame + 1
-
-
-    # # 프레임 보정 (min_frame 기준으로 1부터 시작하도록 offset 적용)
-    # offset_frame_data = {}
-    # for frame, objs in frame_data.items():
-    #     adjusted_frame = frame - min_frame + 1
-    #     offset_frame_data[adjusted_frame] = objs
-
-    # return offset_frame_data, 1, max_frame - min_frame + 1  # (frame_data, min_frame, max_frame)
+    return frame_data, 1 + frame_offset, max_frame - min_frame + 1, frame_to_time
     
 # GPS 및 픽셀 기준점 (make_json.py에서 가져온 값 그대로 사용)
 gps_top_left = (37.40105982169699,127.11294216334416)
@@ -152,12 +138,14 @@ def draw_qt_transparent_polygon(painter, polygon, color=Qt.green, alpha=80):
 
     painter.setBrush(Qt.NoBrush)  # 그 후 다시 원래대로 되돌림
 
+
+
 class VideoWindow(QWidget):
 
     # def __init__(self, video_path):
     def __init__(self, video_label_pairs):
         super().__init__()
-        self.setWindowTitle("TrafficTool")
+        self.setWindowTitle("Watching Tool")
         self.video_label_pairs = video_label_pairs  # 전체 쌍
         self.current_index = 0
 
@@ -199,6 +187,11 @@ class VideoWindow(QWidget):
 
         self.right_scroll.setWidget(self.right_panel)
 
+        # ✅ 콤보박스 위에 '영상 선택' 라벨 추가
+        video_select_label = QLabel("🎞 영상 선택")
+        video_select_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #444;")
+        self.right_layout.addWidget(video_select_label)
+
         # GUI 상단에 QComboBox 추가
         self.file_selector = QComboBox()
         for v, l in self.video_label_pairs:
@@ -218,7 +211,7 @@ class VideoWindow(QWidget):
         self.label_path = label_path
         self.cumulative_frame_offset = 0  # 누적 프레임 오프셋
 
-        self.frame_data, self.min_frame, self.max_frame = read_raw_data(self.label_path, frame_offset=self.cumulative_frame_offset)
+        self.frame_data, self.min_frame, self.max_frame, self.frame_time_map = read_raw_data(self.label_path, frame_offset=self.cumulative_frame_offset)
         self.frame_idx = self.min_frame  # 항상 1이 됨
 
         self.per_file_states = {}  # 각 영상별 상태 저장용 딕셔너리
@@ -284,9 +277,6 @@ class VideoWindow(QWidget):
 
         self.stop_polygons = []  # → [ ([QPoint, QPoint, QPoint, QPoint], "설명"), ... ]
 
-        # json 불러오기 호출
-        # self.load_lines_and_areas_from_json()
-
         self.installEventFilter(self)
 
         # 선 통과 여부 저장용 딕셔너리 추가
@@ -322,22 +312,7 @@ class VideoWindow(QWidget):
         self.play_pause_button = QPushButton("⏯ 재생 / 일시정지")
         self.play_pause_button.clicked.connect(self.toggle_play_pause)
         self.right_layout.addWidget(self.play_pause_button)
-
-        # ▶ 이전 프레임 버튼
-        self.prev_frame_button = QPushButton("◀ 이전 프레임")
-        self.prev_frame_button.clicked.connect(self.go_prev_frame)
-        self.prev_frame_button.setFixedHeight(40)
-
-        # ▶ 다음 프레임 버튼
-        self.next_frame_button = QPushButton("▶ 다음 프레임")
-        self.next_frame_button.clicked.connect(self.go_next_frame)
-        self.next_frame_button.setFixedHeight(40)
-
-        # ✅ 두 버튼을 한 줄로 묶기
-        frame_nav_layout = QHBoxLayout()
-        frame_nav_layout.addWidget(self.prev_frame_button)
-        frame_nav_layout.addWidget(self.next_frame_button)
-        self.right_layout.addLayout(frame_nav_layout)
+        self.play_pause_button.setFixedHeight(40)
 
         # 📂 이전 / 다음 영상 버튼
         self.prev_video_button = QPushButton("📂 이전 영상")
@@ -359,10 +334,11 @@ class VideoWindow(QWidget):
         self.reset_button = QPushButton("🔁 처음으로 돌아가기")
         self.reset_button.clicked.connect(self.reset_video_state)
         self.right_layout.addWidget(self.reset_button)
+        self.reset_button.setFixedHeight(40)
 
-        self.frame_label = QLabel("프레임: 1")
-        self.frame_label.setStyleSheet("color: navy; font-size: 20px;")
-        self.right_layout.addWidget(self.frame_label)
+        self.time_label = QLabel("시간: -")
+        self.time_label.setStyleSheet("color: darkgreen; font-size: 20px;")
+        self.right_layout.addWidget(self.time_label)
 
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setMinimum(1)
@@ -373,29 +349,22 @@ class VideoWindow(QWidget):
         self.frame_slider.sliderReleased.connect(self.handle_slider_moved)
         self.right_layout.addWidget(self.frame_slider)
 
-        self.play_pause_button.setFixedHeight(40)
-        self.prev_frame_button.setFixedHeight(40)
-        self.next_frame_button.setFixedHeight(40)
-        self.reset_button.setFixedHeight(40)
+        # 🔄 5초 되돌리기 / 앞으로 가기 버튼 추가
+        self.skip_back_button = QPushButton("⏪ 5초 되돌리기")
+        self.skip_forward_button = QPushButton("⏩ 5초 앞으로 가기")
+        self.skip_back_button.setFixedHeight(40)
+        self.skip_forward_button.setFixedHeight(40)
 
-        # 프레임 검색 입력창 + 버튼
-        self.search_frame_input = QLineEdit()
-        self.search_frame_input.setPlaceholderText("이동할 프레임 입력")
-        self.search_frame_input.setFixedWidth(240)
-        self.search_frame_input.setFixedHeight(40)
-        font = self.search_frame_input.font()
-        font.setPointSize(18)  # 숫자 폰트 크기 키우기
-        self.search_frame_input.setFont(font)
+        # 👉 함수 연결
+        self.skip_back_button.clicked.connect(lambda: self.skip_seconds(-5))
+        self.skip_forward_button.clicked.connect(lambda: self.skip_seconds(5))
 
-        self.search_frame_button = QPushButton("이동")
-        self.search_frame_button.setFixedHeight(40)
-        self.search_frame_button.clicked.connect(self.jump_to_frame)
+        # 👉 수평 정렬
+        skip_layout = QHBoxLayout()
+        skip_layout.addWidget(self.skip_back_button)
+        skip_layout.addWidget(self.skip_forward_button)
+        self.right_layout.addLayout(skip_layout)
         
-        # 수평으로 묶기
-        frame_jump_layout = QHBoxLayout()
-        frame_jump_layout.addWidget(self.search_frame_input)
-        frame_jump_layout.addWidget(self.search_frame_button)
-        self.right_layout.addLayout(frame_jump_layout)
 
         self.force_draw_objects = False  # 👉 객체 박스 강제 그리기 용도
         self.group_states = {}  # 👉 폴더별(장소별) 상태 저장
@@ -422,34 +391,6 @@ class VideoWindow(QWidget):
         else:
             self.is_paused = not self.is_paused
 
-    def go_prev_frame(self):
-        if self.frame_idx <= 1:
-            print("첫 프레임입니다.")
-            return
-        self.frame_idx -= 1
-        frame = self.safe_seek(self.frame_idx)
-        if frame is not None:
-            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.frame_label.setText(f"프레임: {self.frame_idx}")
-            self.frame_slider.setValue(self.frame_idx)
-            self.force_draw_objects = True
-            self.update_frame()
-            self.force_draw_objects = False
-
-    def go_next_frame(self):
-        if self.frame_idx >= self.total_frames:
-            print("마지막 프레임입니다.")
-            return
-        self.frame_idx += 1
-        frame = self.safe_seek(self.frame_idx)
-        if frame is not None:
-            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.frame_label.setText(f"프레임: {self.frame_idx}")
-            self.frame_slider.setValue(self.frame_idx)
-            self.force_draw_objects = True
-            self.update_frame()
-            self.force_draw_objects = False
-
     def reset_video_state(self):
         print("🔁 상태 초기화")
         self.lines.clear()
@@ -465,24 +406,11 @@ class VideoWindow(QWidget):
         self.cross_log.clear()
         self.area_number = 1
 
-        # 위젯 정리
-        for widget in self.line_widgets.values():
-            self.scroll_layout.removeWidget(widget)
-            widget.deleteLater()
-        self.line_widgets.clear()
-        self.line_labels.clear()
-
-        for widget in self.area_widgets.values():
-            self.scroll_layout.removeWidget(widget)
-            widget.deleteLater()
-        self.area_widgets.clear()
-        self.area_labels.clear()
-
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.frame_idx = 1
-        self.frame_label.setText("프레임: 1")
+        self.time_label.setText(f"시간: {self.frame_time_map[self.frame_idx]}")
         self.frame_slider.setValue(1)
-        self.search_frame_input.clear()
+        # self.search_frame_input.clear()
 
         ret, frame = self.cap.read()
         if ret:
@@ -533,7 +461,9 @@ class VideoWindow(QWidget):
         self.video_path, self.label_path = self.video_label_pairs[index]
 
         # ✅ 오프셋 제거된 read_raw_data 호출
-        self.frame_data, self.min_frame, self.max_frame = read_raw_data(self.label_path)
+        # self.frame_data, self.min_frame, self.max_frame = read_raw_data(self.label_path)
+        self.frame_data, self.min_frame, self.max_frame, self.frame_time_map = read_raw_data(self.label_path, frame_offset=self.cumulative_frame_offset)
+
 
         # ✅ frame_data 비었을 때 경고
         if not self.frame_data:
@@ -651,8 +581,14 @@ class VideoWindow(QWidget):
         if ret:
             self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             self.update_display_with_lines()
-            self.frame_label.setText(f"프레임: {self.frame_idx}")
+            # self.frame_label.setText(f"프레임: {self.frame_idx}")
             self.frame_slider.setValue(self.frame_idx)
+
+            # ✅ 시간 라벨 업데이트
+            if self.frame_idx in self.frame_time_map:
+                self.time_label.setText(f"시간: {self.frame_time_map[self.frame_idx]}")
+            else:
+                self.time_label.setText("시간: -")
 
         # ✅ 여기에 이 2줄 추가
         self.drawing_enabled = True
@@ -668,46 +604,99 @@ class VideoWindow(QWidget):
                 return desc
         return ""
     
-    def safe_seek(self, target_frame):
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        for i in range(target_frame - 1):
-            ret, _ = self.cap.read()
-            if not ret:
-                print(f"[ERROR] Frame {i+1} read failed during seek")
-
-        ret, frame = self.cap.read()
-        if not ret:
-            print(f"[ERROR] Frame {target_frame} read failed at target")
-            return None
-
-        if frame is None:
-            print(f"[ERROR] Frame {target_frame} is None")
-            return None
-
-        return frame.copy()  # ✅ 반드시 frame 반환해야 정상 동작
-    
-    def jump_to_frame(self):
-        text = self.search_frame_input.text().strip()
-        if not text.isdigit():
-            QMessageBox.warning(self, "입력 오류", "숫자만 입력해주세요.")
+    def skip_seconds(self, seconds):
+        # """현재 시간에서 ±seconds 후 가장 가까운 프레임으로 이동"""
+        if self.frame_idx not in self.frame_time_map:
+            print("[ERROR] 현재 프레임 시간 정보 없음")
             return
 
-        frame_number = int(text)
-        if not (1 <= frame_number <= self.total_frames):
-            QMessageBox.warning(self, "범위 오류", f"1 ~ {self.total_frames} 사이의 값을 입력해주세요.")
+        # 현재 시간 가져오기
+        current_time_str = self.frame_time_map[self.frame_idx]
+        try:
+            current_time = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S.%f")
+        except ValueError:
+            print("[ERROR] 시간 파싱 실패:", current_time_str)
             return
 
-        frame = self.safe_seek(frame_number)
+        # 목표 시간 계산
+        target_time = current_time + timedelta(seconds=seconds)
+
+        # 가장 가까운 프레임 찾기
+        target_frame = self.find_closest_frame_to_time(target_time)
+
+        # ✅ 최소 프레임보다 작으면 첫 프레임으로 보정
+        if target_frame < self.min_frame:
+            print("[INFO] 영상 시작보다 앞이라 첫 프레임으로 이동")
+            target_frame = self.min_frame
+
+        # ✅ 최대 프레임보다 크면 마지막 프레임으로 보정
+        if target_frame > self.total_frames:
+            print("[INFO] 영상 끝보다 뒤라 마지막 프레임으로 이동")
+            target_frame = self.total_frames
+
+        # 이동 수행
+        frame = self.safe_seek(target_frame)
         if frame is not None:
-            self.frame_idx = frame_number
+            self.frame_idx = target_frame
             self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.frame_label.setText(f"프레임: {self.frame_idx}")
-            self.frame_slider.setValue(self.frame_idx)
-            self.update_display_with_lines()
 
+            if self.frame_idx in self.frame_time_map:
+                self.time_label.setText(f"시간: {self.frame_time_map[self.frame_idx]}")
+            else:
+                self.time_label.setText("시간: -")
+
+            self.frame_slider.setValue(self.frame_idx)
             self.force_draw_objects = True
             self.update_frame()
             self.force_draw_objects = False
+
+    def find_closest_frame_to_time(self, target_time: datetime) -> int:
+        closest_frame = self.frame_idx
+        closest_diff = timedelta.max
+
+        for f, time_str in self.frame_time_map.items():
+            try:
+                frame_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                continue
+
+            diff = abs(frame_time - target_time)
+            if diff < closest_diff:
+                closest_diff = diff
+                closest_frame = f
+
+        return closest_frame
+    
+    def safe_seek(self, target_frame):
+        # """빠르게 특정 프레임으로 이동"""
+        # 1프레임부터 시작 → OpenCV는 0-based니까
+        frame_idx = max(0, int(target_frame - 1))
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+
+        ret, frame = self.cap.read()
+        if not ret or frame is None:
+            print(f"[ERROR] Frame {target_frame} read failed")
+            return None
+
+        return frame.copy()
+    
+    # def safe_seek(self, target_frame):
+    #     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    #     for i in range(target_frame - 1):
+    #         ret, _ = self.cap.read()
+    #         if not ret:
+    #             print(f"[ERROR] Frame {i+1} read failed during seek")
+
+    #     ret, frame = self.cap.read()
+    #     if not ret:
+    #         print(f"[ERROR] Frame {target_frame} read failed at target")
+    #         return None
+
+    #     if frame is None:
+    #         print(f"[ERROR] Frame {target_frame} is None")
+    #         return None
+
+    #     return frame.copy()  # ✅ 반드시 frame 반환해야 정상 동작
 
     def inside_for_last_n_frames(self, obj_id, n=10):
     # """객체가 최근 n프레임 이상 ROI 내에 있었는지"""
@@ -801,97 +790,6 @@ class VideoWindow(QWidget):
                 # cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
                 curr_point = QPoint(cx, cy)
 
-
-                # 선 통과 감지: 이전 위치와 현재 위치가 선을 가로질렀는지 확인 / 통과한 선은 crossed_lines에 추가
-                if obj_id in self.prev_positions:
-                    prev_point = self.prev_positions[obj_id]
-                    for p1, p2, num, _ in self.lines:
-                        if (obj_id, num) not in self.crossed_lines:
-                            if crossed_line(p1, p2, prev_point, curr_point):
-                                self.crossed_lines.add((obj_id, num))
-                                self.line_counts[num] = self.line_counts.get(num, 0) + 1
-                                print(f"🚗 차량 {obj_id} 선 {num} 통과 (총 {self.line_counts[num]}회)")
-
-                                # 선 통과 기록
-                                self.cross_log.add((obj_id, num))
-
-                # 현재 위치 저장
-                self.prev_positions[obj_id] = curr_point           
-
-            # 프레임 저장 및 표시 갱신
-            self.frame = frame_rgb
-
-            # 현재 프레임 객체들의 선 통과 여부 기록
-            for obj in self.frame_data.get(self.frame_idx, []):
-                obj_id, x1, y1, x2, y2, label, original_timestamp_str = obj
-                # real_frame = self.cumulative_frame_offset + self.frame_idx
-                base_info = [self.frame_idx, obj_id, x1, y1, x2, y2, label] # LABEL_NAMES.get(label, label): 라벨명 그대로 출력
-
-                # 선 통과 여부
-                # 🎯 A에서 정의한 ID 리스트를 여기도 복붙하거나 다시 정의해도 OK
-                current_line_ids = sorted(set(line[2] for line in self.lines))  # 살아있는 선만
-                line_states = []
-                for lid in current_line_ids:
-                    key = (obj_id, lid)
-                    if key in self.cross_log and key not in self.line_cross_once_logged:
-                        line_states.append(1)
-                        self.line_cross_once_logged.add(key)
-                    else:
-                        line_states.append(0)
-
-                # 중심 좌표
-                cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
-
-                # 영역 포함 여부
-                current_area_ids = list(range(1, len(self.stop_polygons) + 1))
-                # 현재 영역 수 기준으로 실제 영역 polygon 매핑
-                polygon_dict = {j + 1: polygon for j, (polygon, _) in enumerate(self.stop_polygons)}
-
-                area_states = []
-                for aid in current_area_ids:
-                    polygon = polygon_dict.get(aid, None)
-
-                    if polygon and len(polygon) == 4:
-                        pts = np.array([(pt.x(), pt.y()) for pt in polygon], dtype=np.int32)
-                        inside = point_in_polygon((cx, cy), pts)
-                        # print(f"[DEBUG] Frame {self.frame_idx} | ID {obj_id} | Center ({cx},{cy}) → Area {aid} → {inside}")
-                        area_states.append(1 if inside else 0)
-                    else:
-                        area_states.append(0)
-
-                # line_id 리스트 직접 가져오기
-                line_ids = sorted(set(line[2] for line in self.lines))
-                area_ids = list(range(1, len(self.stop_polygons) + 1))
-
-                # CSV 헤더 작성 (파일 맨 처음 한 번만 실행)
-                if not self.csv_header_written:
-                    with open(self.output_csv, "w") as f:
-                        base = "video,timestamp,frame,obj_id,x1,y1,x2,y2,label"
-
-                        # ✅ 현재 살아있는 선 ID / 영역 ID 기준으로만 컬럼 생성
-                        current_line_ids = sorted(set(line[2] for line in self.lines))
-                        current_area_ids = list(range(1, len(self.stop_polygons) + 1))
-
-                        for lid in current_line_ids:
-                            base += f",line_{lid}"
-                        for aid in current_area_ids:
-                            base += f",area_{aid}"
-
-                        f.write(base + "\n")
-                    self.csv_header_written = True
-
-                with open(self.output_csv, "a", newline='') as f:
-                    video_name = os.path.basename(self.video_path)
-
-                    # 🎯 row 구성
-                    row = [video_name, original_timestamp_str] + base_info + line_states + area_states
-                    f.write(','.join(map(str, row)) + "\n")
-
-            # # ✅ 선 통과 카운트 라벨 갱신
-            for line_id, label in self.line_labels.items():
-                count = self.line_counts.get(line_id, 0)
-                label.setText(f"선 {line_id} ({self.get_line_description(line_id)}): Count: {count}")
-
         if not self.is_paused and not self.force_draw_objects:
             self.frame_idx += 1
 
@@ -911,7 +809,13 @@ class VideoWindow(QWidget):
             return
 
         self.update_display_with_lines()
-        self.frame_label.setText(f"프레임: {self.frame_idx}") # ✅ 현재 프레임 표시
+
+        # ✅ 시간 라벨만 갱신
+        if self.frame_idx in self.frame_time_map:
+            self.time_label.setText(f"시간: {self.frame_time_map[self.frame_idx]}")
+        else:
+            self.time_label.setText("시간: -")
+
         self.frame_slider.setValue(self.frame_idx)
                            
     def update_display_with_lines(self):
@@ -934,7 +838,13 @@ class VideoWindow(QWidget):
         if frame is not None:
             self.frame_idx = value
             self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.frame_label.setText(f"프레임: {self.frame_idx}")  # ✅ 영상 내부 기준
+
+            # ✅ 시간 라벨만 갱신
+            if self.frame_idx in self.frame_time_map:
+                self.time_label.setText(f"시간: {self.frame_time_map[self.frame_idx]}")
+            else:
+                self.time_label.setText("시간: -")
+                
             self.frame_slider.setValue(self.frame_idx)
             self.force_draw_objects = True
             self.update_frame()

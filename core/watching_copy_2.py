@@ -187,11 +187,6 @@ class VideoWindow(QWidget):
 
         self.right_scroll.setWidget(self.right_panel)
 
-        # ✅ 콤보박스 위에 '영상 선택' 라벨 추가
-        video_select_label = QLabel("🎞 영상 선택")
-        video_select_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #444;")
-        self.right_layout.addWidget(video_select_label)
-
         # GUI 상단에 QComboBox 추가
         self.file_selector = QComboBox()
         for v, l in self.video_label_pairs:
@@ -336,15 +331,9 @@ class VideoWindow(QWidget):
         self.right_layout.addWidget(self.reset_button)
         self.reset_button.setFixedHeight(40)
 
-        # 실시간 라벨
         self.time_label = QLabel("시간: -")
         self.time_label.setStyleSheet("color: darkgreen; font-size: 20px;")
         self.right_layout.addWidget(self.time_label)
-
-        # ✅ 슬라이더 디바운싱용 QTimer 추가
-        self.slider_preview_timer = QTimer()
-        self.slider_preview_timer.setSingleShot(True)
-        self.slider_preview_timer.timeout.connect(self.apply_slider_preview)
 
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setMinimum(1)
@@ -353,10 +342,6 @@ class VideoWindow(QWidget):
         self.frame_slider.setTickInterval(1)
         self.frame_slider.setSingleStep(1)
         self.frame_slider.sliderReleased.connect(self.handle_slider_moved)
-
-        # ✅ 디바운싱 처리용 valueChanged 연결
-        self.frame_slider.valueChanged.connect(self.delayed_slider_preview)
-
         self.right_layout.addWidget(self.frame_slider)
 
         # 🔄 5초 되돌리기 / 앞으로 가기 버튼 추가
@@ -678,35 +663,22 @@ class VideoWindow(QWidget):
         return closest_frame
     
     def safe_seek(self, target_frame):
-        # """빠르게 특정 프레임으로 이동"""
-        # 1프레임부터 시작 → OpenCV는 0-based니까
-        frame_idx = max(0, int(target_frame - 1))
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        for i in range(target_frame - 1):
+            ret, _ = self.cap.read()
+            if not ret:
+                print(f"[ERROR] Frame {i+1} read failed during seek")
 
         ret, frame = self.cap.read()
-        if not ret or frame is None:
-            print(f"[ERROR] Frame {target_frame} read failed")
+        if not ret:
+            print(f"[ERROR] Frame {target_frame} read failed at target")
             return None
 
-        return frame.copy()
-    
-    # def safe_seek(self, target_frame):
-    #     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    #     for i in range(target_frame - 1):
-    #         ret, _ = self.cap.read()
-    #         if not ret:
-    #             print(f"[ERROR] Frame {i+1} read failed during seek")
+        if frame is None:
+            print(f"[ERROR] Frame {target_frame} is None")
+            return None
 
-    #     ret, frame = self.cap.read()
-    #     if not ret:
-    #         print(f"[ERROR] Frame {target_frame} read failed at target")
-    #         return None
-
-    #     if frame is None:
-    #         print(f"[ERROR] Frame {target_frame} is None")
-    #         return None
-
-    #     return frame.copy()  # ✅ 반드시 frame 반환해야 정상 동작
+        return frame.copy()  # ✅ 반드시 frame 반환해야 정상 동작
 
     def inside_for_last_n_frames(self, obj_id, n=10):
     # """객체가 최근 n프레임 이상 ROI 내에 있었는지"""
@@ -855,27 +827,6 @@ class VideoWindow(QWidget):
             else:
                 self.time_label.setText("시간: -")
                 
-            self.frame_slider.setValue(self.frame_idx)
-            self.force_draw_objects = True
-            self.update_frame()
-            self.force_draw_objects = False
-
-    def delayed_slider_preview(self, value):
-        self.pending_slider_value = value
-        self.slider_preview_timer.start(50)  # 50ms 지연 후 apply 호출
-
-    def apply_slider_preview(self):
-        value = self.pending_slider_value
-        frame = self.safe_seek(value)
-        if frame is not None:
-            self.frame_idx = value
-            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            if self.frame_idx in self.frame_time_map:
-                self.time_label.setText(f"시간: {self.frame_time_map[self.frame_idx]}")
-            else:
-                self.time_label.setText("시간: -")
-
             self.frame_slider.setValue(self.frame_idx)
             self.force_draw_objects = True
             self.update_frame()

@@ -5,7 +5,7 @@ a = Analysis(
     ['pyQT.py'],
     pathex=[],
     binaries=[],
-    datas=[('../assets', 'assets'), ('utils.py', '.')],
+    datas=[('utils.py', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

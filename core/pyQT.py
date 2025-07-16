@@ -180,6 +180,11 @@ class VideoWindow(QWidget):
 
         self.right_scroll.setWidget(self.right_panel)
 
+        # ✅ 콤보박스 위에 '영상 선택' 라벨 추가
+        video_select_label = QLabel("🎞 영상 선택")
+        video_select_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #444;")
+        self.right_layout.addWidget(video_select_label)
+
         # GUI 상단에 QComboBox 추가
         self.file_selector = QComboBox()
         for v, l in self.video_label_pairs:
