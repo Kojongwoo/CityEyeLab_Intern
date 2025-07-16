@@ -352,7 +352,9 @@ class VideoWindow(QWidget):
         self.frame_slider.setValue(self.frame_idx)
         self.frame_slider.setTickInterval(1)
         self.frame_slider.setSingleStep(1)
+        
         self.frame_slider.sliderReleased.connect(self.handle_slider_moved)
+        self.frame_slider.sliderPressed.connect(self.pause_for_slider)
 
         # ✅ 디바운싱 처리용 valueChanged 연결
         self.frame_slider.valueChanged.connect(self.delayed_slider_preview)
@@ -860,6 +862,9 @@ class VideoWindow(QWidget):
             self.update_frame()
             self.force_draw_objects = False
 
+        if self.was_playing:
+            self.timer.start(30)  # 30ms = 약 33fps
+
     def delayed_slider_preview(self, value):
         self.pending_slider_value = value
         self.slider_preview_timer.start(50)  # 50ms 지연 후 apply 호출
@@ -880,6 +885,14 @@ class VideoWindow(QWidget):
             self.force_draw_objects = True
             self.update_frame()
             self.force_draw_objects = False
+
+    def pause_for_slider(self):
+    # """슬라이더를 잡는 순간 재생 멈춤"""
+        if self.timer.isActive():
+            self.timer.stop()
+            self.was_playing = True
+        else:
+            self.was_playing = False
 
     def closeEvent(self, event):
         self.cap.release()
