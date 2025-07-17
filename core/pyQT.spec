@@ -5,7 +5,10 @@ a = Analysis(
     ['pyQT.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('utils.py', '.'),              
+        ('Tool.ico', '.'),          
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,4 +38,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['Tool.ico'],
 )

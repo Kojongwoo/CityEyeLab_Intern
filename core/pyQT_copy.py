@@ -29,23 +29,20 @@ LABEL_COLORS = {
 DEFAULT_COLOR = (200, 200, 200)
 
 # LABEL_NAMES = {
-#     0: 'car',
-#     1: 'bus_s',
-#     2: 'bus_m',
-#     3: 'truck_s',
-#     4: 'truck_m',
-#     5: 'truck_x',
-#     6: 'bike'
+#     0: 'person',
+#     1: 'bicycle',
+#     2: 'car',
+#     3: 'motorcycle',
+#     5: 'bus',
+#     7: 'truck_s',
+#     8: 'pm'
 # }
 
 LABEL_NAMES = {
-    0: 'person',
-    1: 'bicycle',
-    2: 'car',
-    3: 'motorcycle',
-    5: 'bus',
-    7: 'truck_s',
-    8: 'pm'
+    0: 'car',
+    1: 'truck',
+    2: 'bus',
+    3: 'motor'
 }
 
 def get_location_folder_key(path):
@@ -83,15 +80,6 @@ def read_raw_data(path, frame_offset=0):
         offset_frame_data[adjusted_frame] = objs
 
     return offset_frame_data, 1 + frame_offset, max_frame - min_frame + 1
-
-
-    # # 프레임 보정 (min_frame 기준으로 1부터 시작하도록 offset 적용)
-    # offset_frame_data = {}
-    # for frame, objs in frame_data.items():
-    #     adjusted_frame = frame - min_frame + 1
-    #     offset_frame_data[adjusted_frame] = objs
-
-    # return offset_frame_data, 1, max_frame - min_frame + 1  # (frame_data, min_frame, max_frame)
     
 # GPS 및 픽셀 기준점 (make_json.py에서 가져온 값 그대로 사용)
 gps_top_left = (37.40105982169699,127.11294216334416)
@@ -199,6 +187,11 @@ class VideoWindow(QWidget):
 
         self.right_scroll.setWidget(self.right_panel)
 
+        # ✅ 콤보박스 위에 '영상 선택' 라벨 추가
+        video_select_label = QLabel("🎞 영상 선택")
+        video_select_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #444;")
+        self.right_layout.addWidget(video_select_label)
+
         # GUI 상단에 QComboBox 추가
         self.file_selector = QComboBox()
         for v, l in self.video_label_pairs:
@@ -214,7 +207,6 @@ class VideoWindow(QWidget):
         self.video_name_label.setMaximumWidth(320)                   # ✅ 적당한 최대 너비 지정
         self.video_name_label.setStyleSheet("font-size: 18px; font-weight: bold; color: navy;")
         self.right_layout.addWidget(self.video_name_label)
-
 
         self.label_path = label_path
         self.cumulative_frame_offset = 0  # 누적 프레임 오프셋
@@ -284,9 +276,6 @@ class VideoWindow(QWidget):
         self.show_first_frame()
 
         self.stop_polygons = []  # → [ ([QPoint, QPoint, QPoint, QPoint], "설명"), ... ]
-
-        # json 불러오기 호출
-        # self.load_lines_and_areas_from_json()
 
         self.installEventFilter(self)
 
@@ -718,9 +707,9 @@ class VideoWindow(QWidget):
         self.drawing_enabled = True
         self.is_paused = True
 
-        print(f"[DEBUG] 🔄 영상 전환됨: {os.path.basename(self.video_path)}")
-        print(f"[DEBUG] frame_data keys: {list(self.frame_data.keys())[:5]}")
-        print(f"[DEBUG] frame_idx = {self.frame_idx}")
+        # print(f"[DEBUG] 🔄 영상 전환됨: {os.path.basename(self.video_path)}")
+        # print(f"[DEBUG] frame_data keys: {list(self.frame_data.keys())[:5]}")
+        # print(f"[DEBUG] frame_idx = {self.frame_idx}")
 
     def get_line_description(self, line_id):
         for p1, p2, num, desc in self.lines:
@@ -728,23 +717,14 @@ class VideoWindow(QWidget):
                 return desc
         return ""
     
+    # 🔁 수정
     def safe_seek(self, target_frame):
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        for i in range(target_frame - 1):
-            ret, _ = self.cap.read()
-            if not ret:
-                print(f"[ERROR] Frame {i+1} read failed during seek")
-
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame - 1)
         ret, frame = self.cap.read()
-        if not ret:
-            print(f"[ERROR] Frame {target_frame} read failed at target")
+        if not ret or frame is None:
+            print(f"[ERROR] Frame {target_frame} read failed")
             return None
-
-        if frame is None:
-            print(f"[ERROR] Frame {target_frame} is None")
-            return None
-
-        return frame.copy()  # ✅ 반드시 frame 반환해야 정상 동작
+        return frame.copy()
     
     def jump_to_frame(self):
         text = self.search_frame_input.text().strip()
@@ -858,15 +838,7 @@ class VideoWindow(QWidget):
                 # 중심 좌표 계산 및 시각화
                 cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
                 cv2.circle(frame_rgb, (cx, cy), 3, color, -1)
-
-                # # GPS 좌표 표시
-                # lat, lon = pixel_to_gps(cx, cy)
-                # cv2.putText(frame_rgb, f"({lat:.6f}, {lon:.6f})", (cx + 5, cy + 15),
-                #             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-
-                # cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
                 curr_point = QPoint(cx, cy)
-
 
                 # 선 통과 감지: 이전 위치와 현재 위치가 선을 가로질렀는지 확인 / 통과한 선은 crossed_lines에 추가
                 if obj_id in self.prev_positions:
@@ -890,7 +862,6 @@ class VideoWindow(QWidget):
             # 현재 프레임 객체들의 선 통과 여부 기록
             for obj in self.frame_data.get(self.frame_idx, []):
                 obj_id, x1, y1, x2, y2, label, original_timestamp_str = obj
-                # real_frame = self.cumulative_frame_offset + self.frame_idx
                 base_info = [self.frame_idx, obj_id, x1, y1, x2, y2, label] # LABEL_NAMES.get(label, label): 라벨명 그대로 출력
 
                 # 선 통과 여부
@@ -1284,19 +1255,6 @@ class VideoWindow(QWidget):
             self.force_draw_objects = True
             self.update_frame()
             self.force_draw_objects = False
-
-    # def clear_shape_widgets(self):
-    #     for widget in self.line_widgets.values():
-    #         self.scroll_layout.removeWidget(widget)
-    #         widget.deleteLater()
-    #     self.line_widgets.clear()
-    #     self.line_labels.clear()
-
-    #     for widget in self.area_widgets.values():
-    #         self.scroll_layout.removeWidget(widget)
-    #         widget.deleteLater()
-    #     self.area_widgets.clear()
-    #     self.area_labels.clear()
 
     def clear_shape_widgets(self):
         # 👉 스크롤 레이아웃 안의 모든 위젯 제거

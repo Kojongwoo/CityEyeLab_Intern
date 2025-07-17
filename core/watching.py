@@ -24,15 +24,6 @@ LABEL_COLORS = {
 
 DEFAULT_COLOR = (200, 200, 200)
 
-# LABEL_NAMES = {
-#     0: 'car',
-#     1: 'bus_s',
-#     2: 'bus_m',
-#     3: 'truck_s',
-#     4: 'truck_m',
-#     5: 'truck_x',
-#     6: 'bike'
-# }
 
 LABEL_NAMES = {
     0: 'person',
@@ -43,6 +34,13 @@ LABEL_NAMES = {
     7: 'truck_s',
     8: 'pm'
 }
+
+# LABEL_NAMES = {
+#     0: 'car',
+#     1: 'truck',
+#     2: 'bus',
+#     3: 'motor'
+# }
 
 def get_location_folder_key(path):
     return os.path.basename(os.path.dirname(path))
@@ -145,7 +143,7 @@ class VideoWindow(QWidget):
     # def __init__(self, video_path):
     def __init__(self, video_label_pairs):
         super().__init__()
-        self.setWindowTitle("Watching Tool")
+        self.setWindowTitle("Watching Tool_old")
         self.video_label_pairs = video_label_pairs  # 전체 쌍
         self.current_index = 0
 
@@ -606,9 +604,9 @@ class VideoWindow(QWidget):
         self.drawing_enabled = True
         self.is_paused = True
 
-        print(f"[DEBUG] 🔄 영상 전환됨: {os.path.basename(self.video_path)}")
-        print(f"[DEBUG] frame_data keys: {list(self.frame_data.keys())[:5]}")
-        print(f"[DEBUG] frame_idx = {self.frame_idx}")
+        # print(f"[DEBUG] 🔄 영상 전환됨: {os.path.basename(self.video_path)}")
+        # print(f"[DEBUG] frame_data keys: {list(self.frame_data.keys())[:5]}")
+        # print(f"[DEBUG] frame_idx = {self.frame_idx}")
 
     def get_line_description(self, line_id):
         for p1, p2, num, desc in self.lines:
@@ -619,7 +617,7 @@ class VideoWindow(QWidget):
     def skip_seconds(self, seconds):
         # """현재 시간에서 ±seconds 후 가장 가까운 프레임으로 이동"""
         if self.frame_idx not in self.frame_time_map:
-            print("[ERROR] 현재 프레임 시간 정보 없음")
+            # print("[ERROR] 현재 프레임 시간 정보 없음")
             return
 
         # 현재 시간 가져오기
